@@ -1,0 +1,24 @@
+{
+  "ociVersion": "1.0",
+  "process": {
+    "args": ["/bin/true"],
+    "env": ["A=1"],
+    "terminal": true,
+    "user": {"uid": 1000, "gid": 1000, "additionalGids": [10]},
+    "capabilities": {"bounding": ["CAP_CHOWN"]}
+  },
+  "root": {"readonly": true},
+  "mounts": [{"destination": "/data", "type": "bind", "source": "/x"}],
+  "hooks": {"poststop": [{"path": "/bin/true"}]},
+  "linux": {
+    "namespaces": [{"type": "pid"}, {"type": "cgroup"}],
+    "uidMappings": [{"containerID": 0, "hostID": 1000, "size": 1}],
+    "gidMappings": [{"containerID": 0, "hostID": 1000, "size": 1}],
+    "sysctl": {"net.core.somaxconn": "1024"},
+    "maskedPaths": ["/proc/kcore"],
+    "readonlyPaths": ["/proc/sys"],
+    "resources": {"cpu": {"shares": 1024}},
+    "seccomp": {"defaultAction": "SCMP_ACT_ALLOW"}
+  },
+  "jailor": {"network": "bridge", "userns": "on"}
+}

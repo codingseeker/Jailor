@@ -1,0 +1,48 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      # internal/jail exercises real namespaces/seccomp/cgroups and needs
+      # root with those kernel features; it is run in a separate privileged
+      # job so the standard suite stays green everywhere.
+      - name: Test (race), excluding internal/jail
+        run: go test -race $(go list ./... | grep -v '/internal/jail$')
+
+  jail-integration:
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Prepare rootfs for jail tests
+        run: |
+          if [ -x scripts/build-rootfs.sh ]; then
+            ./scripts/build-rootfs.sh rootfs
+          fi
+
+      - name: jail integration tests (needs root + kernel namespaces)
+        run: sudo -E env "PATH=$PATH" go test -race ./internal/jail/
