@@ -21,9 +21,6 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      # internal/jail exercises real namespaces/seccomp/cgroups and needs
-      # root with those kernel features; it is run in a separate privileged
-      # job so the standard suite stays green everywhere.
       - name: Test (race), excluding internal/jail
         run: go test -race $(go list ./... | grep -v '/internal/jail$')
 
