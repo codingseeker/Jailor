@@ -107,6 +107,10 @@ func stagerLaunch(cfg *InitConfig, readyFD, initPIDFD, prisonerFD, prisonerReadF
 	if err := makeMountsPrivate(); err != nil {
 		return 0, 0, err
 	}
+	self, err := os.Executable()
+	if err != nil {
+		return 0, 0, fmt.Errorf("jail: locate self: %w", err)
+	}
 
 	devRoot, tmpRoot, err := cellMountPoints(cfg.Rootfs)
 	if err != nil {
@@ -169,10 +173,6 @@ func stagerLaunch(cfg *InitConfig, readyFD, initPIDFD, prisonerFD, prisonerReadF
 	prisoner, err := newRawExec(argv, env)
 	if err != nil {
 		return 0, 0, fmt.Errorf("jail: encode prisoner command: %w", err)
-	}
-	self, err := os.Executable()
-	if err != nil {
-		return 0, 0, fmt.Errorf("jail: locate self: %w", err)
 	}
 	initSpec, err := newRawExec([]string{self, InitArg}, jailInitEnvironment(env))
 	if err != nil {

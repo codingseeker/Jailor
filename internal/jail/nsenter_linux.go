@@ -63,7 +63,6 @@ func enterTargetNamespaces(pid int) error {
 		name string
 		flag uintptr
 	}{
-		{"user", syscall.CLONE_NEWUSER},
 		{"mnt", syscall.CLONE_NEWNS},
 		{"uts", syscall.CLONE_NEWUTS},
 		{"ipc", syscall.CLONE_NEWIPC},

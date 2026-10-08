@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -142,6 +143,9 @@ func prisonerEnvironment(cfg *InitConfig) ([]string, error) {
 	}
 	if _, ok := envValue(env, "TERM"); !ok {
 		env = append(env, "TERM=dumb")
+	}
+	if _, ok := envValue(env, "GOMAXPROCS"); !ok {
+		env = append(env, "GOMAXPROCS="+strconv.Itoa(runtime.GOMAXPROCS(0)))
 	}
 	return env, nil
 }
