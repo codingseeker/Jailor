@@ -1,15 +1,12 @@
-//go:build linux
+//go:build linux && jailor_priv
 
 package jail
 
 import (
-	"bytes"
-	"fmt"
 	"io"
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -20,7 +17,7 @@ import (
 func runCmd(t *testing.T, argv []string, stdin io.Reader, stdout, stderr io.Writer, env []string) (int, error) {
 	t.Helper()
 	if !canUseNamespaces() {
-		t.Skip("environment cannot create namespaces")
+		t.Fatal("the privileged tier cannot create namespaces")
 	}
 	if stdout == nil {
 		stdout = io.Discard
@@ -148,7 +145,7 @@ func TestNonZeroExitCode(t *testing.T) {
 
 func TestCommandNotFound(t *testing.T) {
 	if !canUseNamespaces() {
-		t.Skip("environment cannot create namespaces")
+		t.Fatal("the privileged tier cannot create namespaces")
 	}
 	cfg := &InitConfig{
 		Args:      []string{"/nonexistent-binary-xyz"},
@@ -220,45 +217,10 @@ func TestKillHandling(t *testing.T) {
 	}
 }
 
-type syncBuf struct {
-	mu sync.Mutex
-	b  bytes.Buffer
-}
-
-func (s *syncBuf) Write(p []byte) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.b.Write(p)
-}
-
-func (s *syncBuf) String() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.b.String()
-}
-
-func waitOutput(t *testing.T, buf *syncBuf, marker string) error {
-	t.Helper()
-	deadline := time.NewTimer(10 * time.Second)
-	defer deadline.Stop()
-	ticker := time.NewTicker(10 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		if strings.Contains(buf.String(), marker) {
-			return nil
-		}
-		select {
-		case <-ticker.C:
-		case <-deadline.C:
-			return fmt.Errorf("output did not contain %q:\n%s", marker, buf.String())
-		}
-	}
-}
-
 func runSignalProbe(t *testing.T, sig syscall.Signal) (int, string, error) {
 	t.Helper()
 	if !canUseNamespaces() {
-		t.Skip("environment cannot create namespaces")
+		t.Fatal("the privileged tier cannot create namespaces")
 	}
 	out := &syncBuf{}
 	cfg := &InitConfig{
@@ -302,7 +264,7 @@ func runSignalProbe(t *testing.T, sig syscall.Signal) (int, string, error) {
 
 func TestChildCleanup(t *testing.T) {
 	if !canUseNamespaces() {
-		t.Skip("environment cannot create namespaces")
+		t.Fatal("the privileged tier cannot create namespaces")
 	}
 	cfg := &InitConfig{
 		Args:      []string{"/bin/true"},

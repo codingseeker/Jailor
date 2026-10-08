@@ -1,4 +1,4 @@
-//go:build linux
+//go:build linux && jailor_priv
 
 package jail
 
@@ -21,7 +21,10 @@ func securityProbeArgs(args ...string) []string {
 func securityJail(t *testing.T, cfg *InitConfig) string {
 	t.Helper()
 	if !canUseNamespaces() {
-		t.Skip("environment cannot create namespaces")
+		t.Fatal("the privileged tier cannot create namespaces")
+	}
+	if cfg.Rootfs != "" && len(cfg.Args) > 0 && cfg.Args[0] == testExe {
+		cfg.Args = append([]string{copyProbeIntoCell(t, cfg.Rootfs)}, cfg.Args[1:]...)
 	}
 	out, code := runConfigured(t, cfg, true)
 	if code != 0 {
@@ -32,7 +35,7 @@ func securityJail(t *testing.T, cfg *InitConfig) string {
 
 func TestEscapeOldRootIsInaccessible(t *testing.T) {
 	if os.Geteuid() != 0 {
-		t.Skip("read-only Cell assertions require host root: remounting a superblock owned by the initial user namespace requires CAP_SYS_ADMIN there")
+		t.Fatalf("read-only Cell assertions require host root to remount a superblock, euid is %d", os.Geteuid())
 	}
 	cell := scratchCell(t)
 	if err := os.WriteFile(filepath.Join(cell, "marker"), []byte("cell-only"), 0o644); err != nil {
@@ -51,7 +54,7 @@ func TestEscapeOldRootIsInaccessible(t *testing.T) {
 
 func TestEscapeOldRootMountPointRemoved(t *testing.T) {
 	if os.Geteuid() != 0 {
-		t.Skip("read-only Cell assertions require host root: remounting a superblock owned by the initial user namespace requires CAP_SYS_ADMIN there")
+		t.Fatalf("read-only Cell assertions require host root to remount a superblock, euid is %d", os.Geteuid())
 	}
 	cell := scratchCell(t)
 	out := securityJail(t, &InitConfig{
@@ -67,7 +70,7 @@ func TestEscapeOldRootMountPointRemoved(t *testing.T) {
 
 func TestEscapeHostRootNotVisibleInCell(t *testing.T) {
 	if os.Geteuid() != 0 {
-		t.Skip("Cell assertions require root")
+		t.Fatalf("Cell assertions require host root, euid is %d", os.Geteuid())
 	}
 	cell := scratchCell(t)
 	out := securityJail(t, &InitConfig{
@@ -83,7 +86,7 @@ func TestEscapeHostRootNotVisibleInCell(t *testing.T) {
 
 func TestEscapeParentTraversalIsContained(t *testing.T) {
 	if os.Geteuid() != 0 {
-		t.Skip("Cell assertions require root")
+		t.Fatalf("Cell assertions require host root, euid is %d", os.Geteuid())
 	}
 	cell := scratchCell(t)
 	out := securityJail(t, &InitConfig{
@@ -99,7 +102,7 @@ func TestEscapeParentTraversalIsContained(t *testing.T) {
 
 func TestEscapeSymlinkTraversalIsContained(t *testing.T) {
 	if os.Geteuid() != 0 {
-		t.Skip("Cell assertions require root")
+		t.Fatalf("Cell assertions require host root, euid is %d", os.Geteuid())
 	}
 	cell := scratchCell(t)
 	link := filepath.Join(cell, "escape")
@@ -119,7 +122,7 @@ func TestEscapeSymlinkTraversalIsContained(t *testing.T) {
 
 func TestCellRootFilesAreReachable(t *testing.T) {
 	if os.Geteuid() != 0 {
-		t.Skip("Cell assertions require root")
+		t.Fatalf("Cell assertions require host root, euid is %d", os.Geteuid())
 	}
 	cell := scratchCell(t)
 	if err := os.WriteFile(filepath.Join(cell, "marker"), []byte("inside"), 0o644); err != nil {
@@ -188,7 +191,7 @@ func TestEscapeSeccompDeniesUnshare(t *testing.T) {
 
 func TestEscapeSeccompDeniesPtrace(t *testing.T) {
 	if os.Geteuid() != 0 && !canUseNamespaces() {
-		t.Skip("environment cannot create namespaces")
+		t.Fatalf("the privileged tier cannot create namespaces as euid %d", os.Geteuid())
 	}
 	out := securityJail(t, &InitConfig{
 		Args:      securityProbeArgs("ptrace-try", "1"),
@@ -240,7 +243,7 @@ func TestEscapeDeviceAccessToHostDevicesDenied(t *testing.T) {
 
 func TestEscapeMountPropagationStaysPrivate(t *testing.T) {
 	if !canUseNamespaces() {
-		t.Skip("environment cannot create namespaces")
+		t.Fatal("the privileged tier cannot create namespaces")
 	}
 	out := securityJail(t, &InitConfig{
 		Args:      securityProbeArgs("mount-try"),
@@ -254,7 +257,7 @@ func TestEscapeMountPropagationStaysPrivate(t *testing.T) {
 
 func TestEscapeHostProcIsNotVisibleInCell(t *testing.T) {
 	if os.Geteuid() != 0 {
-		t.Skip("Cell assertions require root")
+		t.Fatalf("Cell assertions require host root, euid is %d", os.Geteuid())
 	}
 	cell := scratchCell(t)
 	out := securityJail(t, &InitConfig{
@@ -271,7 +274,7 @@ func TestEscapeHostProcIsNotVisibleInCell(t *testing.T) {
 
 func TestEscapeNetworkNamespaceIsIsolated(t *testing.T) {
 	if !canUseNamespaces() {
-		t.Skip("environment cannot create namespaces")
+		t.Fatal("the privileged tier cannot create namespaces")
 	}
 	hostNet := nsInode(mustReadlink(t, "/proc/self/ns/net"))
 
@@ -326,7 +329,7 @@ func mustReadlink(t *testing.T, path string) string {
 
 func TestEscapeFDLeakage(t *testing.T) {
 	if !canUseNamespaces() {
-		t.Skip("environment cannot create namespaces")
+		t.Fatal("the privileged tier cannot create namespaces")
 	}
 	secretPath := filepath.Join(t.TempDir(), "credential")
 	if err := os.WriteFile(secretPath, []byte("host-secret"), 0o600); err != nil {
@@ -375,7 +378,7 @@ func TestEscapeFDLeakage(t *testing.T) {
 
 func TestEscapeSecretFileNotReachableInCell(t *testing.T) {
 	if os.Geteuid() != 0 {
-		t.Skip("Cell assertions require root")
+		t.Fatalf("Cell assertions require host root, euid is %d", os.Geteuid())
 	}
 	cell := scratchCell(t)
 	out := securityJail(t, &InitConfig{
@@ -391,7 +394,7 @@ func TestEscapeSecretFileNotReachableInCell(t *testing.T) {
 
 func TestEscapeSysIsNotVisibleInCell(t *testing.T) {
 	if os.Geteuid() != 0 {
-		t.Skip("Cell assertions require root")
+		t.Fatalf("Cell assertions require host root, euid is %d", os.Geteuid())
 	}
 	cell := scratchCell(t)
 	out := securityJail(t, &InitConfig{
@@ -407,7 +410,7 @@ func TestEscapeSysIsNotVisibleInCell(t *testing.T) {
 
 func TestCleanupAfterNormalExit(t *testing.T) {
 	if !canUseNamespaces() {
-		t.Skip("environment cannot create namespaces")
+		t.Fatal("the privileged tier cannot create namespaces")
 	}
 	target := filepath.Join(t.TempDir(), "cleanup-check")
 	out := &syncBuf{}
@@ -448,7 +451,7 @@ func TestCleanupAfterNormalExit(t *testing.T) {
 
 func TestCleanupAfterInitFailure(t *testing.T) {
 	if !canUseNamespaces() {
-		t.Skip("environment cannot create namespaces")
+		t.Fatal("the privileged tier cannot create namespaces")
 	}
 	out := &syncBuf{}
 	cfg := &InitConfig{
@@ -505,7 +508,7 @@ func assertNoJailProcesses(t *testing.T, initPID int) {
 
 func TestResourceForkBombIsBounded(t *testing.T) {
 	if !canUseNamespaces() {
-		t.Skip("environment cannot create namespaces")
+		t.Fatal("the privileged tier cannot create namespaces")
 	}
 	out := securityJail(t, &InitConfig{
 		Args:      securityProbeArgs("forks", "64"),
@@ -520,7 +523,7 @@ func TestResourceForkBombIsBounded(t *testing.T) {
 
 func TestResourceMemoryExhaustionStaysInsideTheJail(t *testing.T) {
 	if !canUseNamespaces() {
-		t.Skip("environment cannot create namespaces")
+		t.Fatal("the privileged tier cannot create namespaces")
 	}
 	target := filepath.Join(t.TempDir(), "memory-exhaustion")
 	out, code := runConfigured(t, &InitConfig{
@@ -539,7 +542,7 @@ func TestResourceMemoryExhaustionStaysInsideTheJail(t *testing.T) {
 
 func TestResourceCPUThrottleKeepsJailResponsive(t *testing.T) {
 	if !canUseNamespaces() {
-		t.Skip("environment cannot create namespaces")
+		t.Fatal("the privileged tier cannot create namespaces")
 	}
 	start := time.Now()
 	out := securityJail(t, &InitConfig{
@@ -557,7 +560,7 @@ func TestResourceCPUThrottleKeepsJailResponsive(t *testing.T) {
 
 func TestResourcePIDExhaustionIsBounded(t *testing.T) {
 	if !canUseNamespaces() {
-		t.Skip("environment cannot create namespaces")
+		t.Fatal("the privileged tier cannot create namespaces")
 	}
 	out, code := runConfigured(t, &InitConfig{
 		Args:      securityProbeArgs("forks", "16"),

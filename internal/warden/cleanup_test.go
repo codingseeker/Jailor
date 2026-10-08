@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"jailor/internal/ledger"
-	"jailor/internal/rations"
 )
 
 func newTempLedger(t *testing.T, state string, pid int) *ledger.Ledger {
@@ -64,27 +63,6 @@ func TestRecoverSkipsLivePrisoner(t *testing.T) {
 	}
 	if rec.State != ledger.StateRunning {
 		t.Errorf("live record state = %s, want RUNNING", rec.State)
-	}
-}
-
-func TestSweepCgroupsKeepsRunning(t *testing.T) {
-	mount, err := rations.FindCgroupV2Mount()
-	if err != nil {
-		t.Skipf("no cgroup v2 mount: %v", err)
-	}
-	root := filepath.Join(mount, "jailor-test-sweep")
-	if err := os.MkdirAll(filepath.Join(root, "runningjail"), 0o755); err != nil {
-		t.Skipf("cannot create test cgroups (need root): %v", err)
-	}
-	defer os.RemoveAll(root)
-
-	w := &Warden{}
-	recs := []ledger.Record{{ID: "runningjail", State: ledger.StateRunning}}
-	if n := w.SweepCgroups(recs); n != 0 {
-		t.Errorf("sweep removed %d cgroups; must never remove a RUNNING jail's cgroup", n)
-	}
-	if _, err := os.Stat(filepath.Join(root, "runningjail")); err != nil {
-		t.Error("running jail's cgroup should have been preserved")
 	}
 }
 

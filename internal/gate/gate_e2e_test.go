@@ -1,4 +1,4 @@
-//go:build linux
+//go:build linux && jailor_priv
 
 package gate
 
@@ -11,7 +11,7 @@ import (
 func requireRoot(t *testing.T) {
 	t.Helper()
 	if os.Geteuid() != 0 {
-		t.Skip("requires root for network interface operations; skipping")
+		t.Fatalf("the privileged tier must run as host root, euid is %d", os.Geteuid())
 	}
 }
 func TestBridgeCreateAndDelete(t *testing.T) {
@@ -252,7 +252,7 @@ func TestIptablesRules(t *testing.T) {
 	requireRoot(t)
 
 	if _, err := exec.LookPath("iptables"); err != nil {
-		t.Skip("iptables not found; skipping")
+		t.Fatalf("the privileged tier requires iptables on the runner: %v", err)
 	}
 
 	g := &Gate{Mode: ModeBridge, Bridge: "jailor0", Subnet: "10.66.0.0/24"}

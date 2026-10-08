@@ -18,20 +18,20 @@ env:
 
 jobs:
   verify:
-    name: format / build / vet / unit / race
+    name: verify (format / build / vet / unit / race)
     runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
-          # The module has no external dependencies, so there is no go.sum to
-          # cache. Enabling the cache would only emit a warning.
           cache: false
 
       - name: gofmt
@@ -42,18 +42,55 @@ jobs:
             printf 'gofmt reported unformatted files:\n%s\n' "$unformatted" >&2
             exit 1
           fi
+          printf 'gofmt clean\n'
 
       - name: Build
-        run: go build ./...
+        run: |
+          set -euo pipefail
+          go build ./...
+          printf 'go build ok\n'
 
       - name: Vet
-        run: go vet ./...
+        run: |
+          set -euo pipefail
+          go vet ./...
+          printf 'go vet ok\n'
+
+      - name: Vet the rootless tier
+        run: |
+          set -euo pipefail
+          go vet -tags jailor_rootless ./...
+          printf 'go vet -tags jailor_rootless ok\n'
+
+      - name: Vet the privileged tier
+        run: |
+          set -euo pipefail
+          go vet -tags jailor_priv ./...
+          printf 'go vet -tags jailor_priv ok\n'
 
       - name: Unit tests
-        run: go test -count=1 ./...
+        run: |
+          set -euo pipefail
+          go test -count=1 ./...
+          printf 'unit tests ok\n'
 
       - name: Race tests
-        run: go test -count=1 -race ./...
+        run: |
+          set -euo pipefail
+          go test -count=1 -race ./...
+          printf 'race tests ok\n'
+
+      - name: Compile the rootless tier
+        run: |
+          set -euo pipefail
+          go test -count=1 -tags jailor_rootless -run '^$' ./...
+          printf 'rootless tier compiles\n'
+
+      - name: Compile the privileged tier
+        run: |
+          set -euo pipefail
+          go test -count=1 -tags jailor_priv -run '^$' ./...
+          printf 'privileged tier compiles\n'
 
   rootless:
     name: rootless jail integration
@@ -62,53 +99,99 @@ jobs:
       contents: read
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: false
 
-      - name: Print kernel and namespace diagnostics
+      - name: Assert the job is unprivileged
         run: |
           set -euo pipefail
-          printf 'ubuntu: %s\n' "$(lsb_release -ds 2>/dev/null || echo unknown)"
+          if [ "$(id -u)" -eq 0 ]; then
+            printf 'the rootless job must not run as root\n' >&2
+            exit 1
+          fi
+          id
+          printf 'rootless job uid %s is not 0\n' "$(id -u)"
+
+      - name: Print unprivileged environment diagnostics
+        run: |
+          set -euo pipefail
+          id
           uname -a
           uname -r
-          go version
-          id
-          printf 'cgroup version: '
-          if [ -f /sys/fs/cgroup/cgroup.controllers ]; then
-            printf 'v2\n'
+          cat /etc/os-release
+          if [ -r /proc/sys/kernel/unprivileged_userns_clone ]; then
+            printf 'unprivileged_userns_clone: '
+            cat /proc/sys/kernel/unprivileged_userns_clone
           else
-            printf 'v1 or unavailable\n'
+            printf 'unprivileged_userns_clone: not present on this kernel\n'
           fi
-          printf 'user namespace: '
-          if [ -e /proc/self/uid_map ] && [ -w /proc/self/uid_map ]; then
+          if [ -r /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            printf 'apparmor_restrict_unprivileged_userns: '
+            cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          else
+            printf 'apparmor_restrict_unprivileged_userns: not present on this kernel\n'
+          fi
+          grep -E '^(CapEff|CapBnd|NoNewPrivs|Seccomp):' /proc/self/status
+          if [ -r /sys/fs/cgroup/cgroup.controllers ]; then
+            printf 'cgroup controllers: '
+            cat /sys/fs/cgroup/cgroup.controllers
+          else
+            printf 'cgroup controllers: no cgroup v2 unified hierarchy\n'
+          fi
+          if [ -d /sys/kernel/security/apparmor ]; then
+            printf 'apparmor securityfs: present\n'
+          else
+            printf 'apparmor securityfs: absent\n'
+          fi
+          printf 'unprivileged user namespace: '
+          if unshare --user --map-root-user true; then
             printf 'available\n'
           else
-            printf 'restricted\n'
+            printf 'unavailable\n'
           fi
-          for ns in pid user mount net; do
-            printf '%s namespace: ' "$ns"
-            readlink "/proc/self/ns/$ns" || printf 'unavailable\n'
-          done
-          printf 'seccomp support: '
-          grep -E '^Seccomp' /proc/self/status || true
-          printf 'apparmor: '
-          if [ -d /sys/kernel/security/apparmor ] && [ -f /sys/kernel/security/apparmor/profiles ]; then
-            printf 'present\n'
+          printf 'unprivileged mount namespace: '
+          if unshare --user --map-root-user --mount true; then
+            printf 'available\n'
           else
-            printf 'absent\n'
+            printf 'unavailable\n'
           fi
-          grep -E '^(CapEff|CapBnd|NoNewPrivs):' /proc/self/status
+          printf 'unprivileged mount(MS_REC|MS_PRIVATE): '
+          if unshare --user --map-root-user --mount sh -c 'mount --make-rprivate /'; then
+            printf 'permitted\n'
+          else
+            printf 'denied by the kernel or an LSM\n'
+          fi
 
       - name: Prepare the Cell root filesystem
-        run: ./scripts/build-rootfs.sh rootfs
+        run: |
+          set -euo pipefail
+          ./scripts/build-rootfs.sh rootfs
 
       - name: Rootless jail integration tests
-        run: go test -count=1 -timeout 600s ./internal/jail/ ./internal/prisoner/
+        run: |
+          set -euo pipefail
+          if [ "$(id -u)" -eq 0 ]; then
+            printf 'the rootless job must not run as root\n' >&2
+            exit 1
+          fi
+          go test -count=1 -race -timeout 900s -v -tags jailor_rootless ./internal/jail/ ./internal/prisoner/
+
+      - name: Confirm the rootless job never gained privilege
+        run: |
+          set -euo pipefail
+          if [ "$(id -u)" -eq 0 ]; then
+            printf 'the rootless job must not run as root\n' >&2
+            exit 1
+          fi
+          grep -E '^(CapEff|CapBnd):' /proc/self/status
+          printf 'rootless job finished unprivileged\n'
 
   rootful:
     name: rootful jail integration
@@ -117,94 +200,245 @@ jobs:
       contents: read
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: false
 
-      - name: Print kernel and namespace diagnostics
+      - name: Print privileged environment diagnostics
         run: |
           set -euo pipefail
-          printf 'ubuntu: %s\n' "$(lsb_release -ds 2>/dev/null || echo unknown)"
+          id
           uname -a
           uname -r
-          go version
+          cat /etc/os-release
+          if [ -r /proc/sys/kernel/unprivileged_userns_clone ]; then
+            printf 'unprivileged_userns_clone: '
+            cat /proc/sys/kernel/unprivileged_userns_clone
+          else
+            printf 'unprivileged_userns_clone: not present on this kernel\n'
+          fi
+          if [ -r /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            printf 'apparmor_restrict_unprivileged_userns: '
+            cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          else
+            printf 'apparmor_restrict_unprivileged_userns: not present on this kernel\n'
+          fi
+          grep -E '^(CapEff|CapBnd|NoNewPrivs|Seccomp):' /proc/self/status
+          if [ -r /sys/fs/cgroup/cgroup.controllers ]; then
+            printf 'cgroup controllers: '
+            cat /sys/fs/cgroup/cgroup.controllers
+          else
+            printf 'cgroup controllers: no cgroup v2 unified hierarchy\n'
+          fi
+
+      - name: Preflight A sudo and host root
+        run: |
+          set -euo pipefail
+          sudo -v
           sudo id
-          printf 'cgroup version: '
-          if [ -f /sys/fs/cgroup/cgroup.controllers ]; then
-            printf 'v2\n'
-            cat /proc/self/cgroup
-          else
-            printf 'v1 or unavailable\n'
-            cat /proc/self/cgroup
+          sudo sh -c 'test "$(id -u)" -eq 0'
+          sudo sh -c 'test "$(id -u)" = 0'
+          printf 'preflight A: sudo reaches host root\n'
+
+      - name: Preflight B host bind mount
+        run: |
+          set -euo pipefail
+          sudo mount --bind / /mnt
+          sudo umount /mnt
+          if mountpoint -q /mnt; then
+            printf '/mnt is still a mountpoint after umount\n' >&2
+            exit 1
           fi
-          for ns in pid user mount net; do
-            printf '%s namespace: ' "$ns"
-            sudo readlink "/proc/1/ns/$ns" || printf 'unavailable\n'
-          done
-          printf 'seccomp support: '
-          grep -E '^Seccomp' /proc/self/status || true
-          printf 'apparmor: '
-          if [ -d /sys/kernel/security/apparmor ] && [ -f /sys/kernel/security/apparmor/profiles ]; then
-            printf 'present\n'
-          else
-            printf 'absent\n'
+          printf 'preflight B: bind mount and umount ok\n'
+
+      - name: Preflight C mount propagation in a private mount namespace
+        run: |
+          set -euo pipefail
+          sudo unshare --mount sh -c 'set -euo pipefail; mount --make-rprivate /'
+          printf 'preflight C: mount --make-rprivate ok in a private mount namespace\n'
+
+      - name: Preflight D tmpfs in a private mount namespace
+        run: |
+          set -euo pipefail
+          probe="$(mktemp -d)"
+          sudo unshare --mount sh -c '
+            set -euo pipefail
+            mount -t tmpfs tmpfs "$1"
+            umount "$1"
+          ' _ "$probe"
+          rmdir "$probe"
+          printf 'preflight D: tmpfs mount and umount ok\n'
+
+      - name: Preflight E device creation in a private mount namespace
+        run: |
+          set -euo pipefail
+          probe="$(mktemp -d)"
+          sudo unshare --mount sh -c '
+            set -euo pipefail
+            mount -t tmpfs tmpfs "$1"
+            mknod "$1/null" c 1 3
+            test -c "$1/null"
+            umount "$1"
+          ' _ "$probe"
+          rmdir "$probe"
+          printf 'preflight E: mknod and character device verification ok\n'
+
+      - name: Preflight F cgroup v2 hierarchy
+        run: |
+          set -euo pipefail
+          if [ ! -r /sys/fs/cgroup/cgroup.controllers ]; then
+            printf 'no cgroup v2 unified hierarchy at /sys/fs/cgroup\n' >&2
+            exit 1
           fi
-          sudo grep -E '^(CapEff|CapBnd|NoNewPrivs):' /proc/self/status
-          printf 'mount permissions: '
-          if sudo mount -t tmpfs tmpfs /mnt && sudo umount /mnt; then
-            printf 'root may mount\n'
-          else
-            printf 'restricted\n'
+          cgroup2_mount="$(sudo awk '$0 ~ / - cgroup2 / { print $5; exit }' /proc/self/mountinfo)"
+          if [ -z "$cgroup2_mount" ]; then
+            printf 'no cgroup2 entry in /proc/self/mountinfo\n' >&2
+            exit 1
           fi
+          probe="$cgroup2_mount/jailor/ci-preflight-$$"
+          sudo mkdir -p "$probe"
+          if [ ! -d "$probe" ]; then
+            printf 'root could not create the Jailor cgroup hierarchy at %s\n' "$probe" >&2
+            exit 1
+          fi
+          sudo rmdir "$probe"
+          printf 'preflight F: cgroup v2 hierarchy %s accepts Jailor cgroups\n' "$cgroup2_mount"
+
+      - name: Preflight G network namespace and CAP_NET_ADMIN
+        run: |
+          set -euo pipefail
+          sudo unshare --net true
+          printf 'preflight G: unprivileged-style network namespace creation ok\n'
+          probe="jailor-preflight-$$"
+          sudo ip link add "$probe" type dummy
+          sudo ip link show "$probe"
+          sudo ip link del "$probe"
+          if ip link show "$probe" >/dev/null 2>&1; then
+            printf 'the preflight network interface %s was not removed\n' "$probe" >&2
+            exit 1
+          fi
+          printf 'preflight G: CAP_NET_ADMIN in the host network namespace ok\n'
 
       - name: Prepare the Cell root filesystem
-        run: ./scripts/build-rootfs.sh rootfs
-
-      - name: Run the privileged jail integration suite
-        env:
-          JAILOR_TEST_ROOT: "1"
         run: |
           set -euo pipefail
-          sudo -E --preserve-env=PATH,HOME,GOCACHE,GOMODCACHE,GOPATH,GOTOOLCHAIN \
-            env "PATH=$PATH" "HOME=$HOME" \
-                "GOCACHE=$GOCACHE" "GOMODCACHE=$GOMODCACHE" "GOPATH=$GOPATH" \
-            go test -count=1 -race -timeout 900s -v ./internal/jail/
+          ./scripts/build-rootfs.sh rootfs
 
-      - name: Run the privileged security and escape suite
-        env:
-          JAILOR_TEST_ROOT: "1"
+      - name: Privileged jail integration suite
         run: |
           set -euo pipefail
-          sudo -E --preserve-env=PATH,HOME,GOCACHE,GOMODCACHE,GOPATH,GOTOOLCHAIN \
-            env "PATH=$PATH" "HOME=$HOME" \
-                "GOCACHE=$GOCACHE" "GOMODCACHE=$GOMODCACHE" "GOPATH=$GOPATH" \
-            go test -count=1 -timeout 900s -run 'TestEscape|TestCleanup|TestResource' -v ./internal/jail/
+          sudo -E --preserve-env=PATH,HOME,GOCACHE,GOMODCACHE,GOPATH,GOTOOLCHAIN,GOFLAGS \
+            env "PATH=$PATH" "HOME=$HOME" "GOCACHE=$GOCACHE" "GOMODCACHE=$GOMODCACHE" \
+                "GOPATH=$GOPATH" "GOFLAGS=$GOFLAGS" "GOTOOLCHAIN=${GOTOOLCHAIN:-}" \
+            sh -c '
+              set -euo pipefail
+              test "$(id -u)" -eq 0
+              printf "privileged test process: %s\n" "$(id)"
+              exec go test "$@"
+            ' _ -count=1 -race -timeout 1800s -v -tags jailor_priv \
+              ./internal/jail/ ./internal/prisoner/
 
-      - name: Run the privileged cgroup resource suite
-        env:
-          JAILOR_TEST_ROOT: "1"
+      - name: Privileged escape, cleanup and resource suite
         run: |
           set -euo pipefail
-          sudo -E --preserve-env=PATH,HOME,GOCACHE,GOMODCACHE,GOPATH,GOTOOLCHAIN \
-            env "PATH=$PATH" "HOME=$HOME" \
-                "GOCACHE=$GOCACHE" "GOMODCACHE=$GOMODCACHE" "GOPATH=$GOPATH" \
-            go test -count=1 -timeout 900s -v ./internal/rations/
+          sudo -E --preserve-env=PATH,HOME,GOCACHE,GOMODCACHE,GOPATH,GOTOOLCHAIN,GOFLAGS \
+            env "PATH=$PATH" "HOME=$HOME" "GOCACHE=$GOCACHE" "GOMODCACHE=$GOMODCACHE" \
+                "GOPATH=$GOPATH" "GOFLAGS=$GOFLAGS" "GOTOOLCHAIN=${GOTOOLCHAIN:-}" \
+            sh -c '
+              set -euo pipefail
+              test "$(id -u)" -eq 0
+              printf "privileged test process: %s\n" "$(id)"
+              exec go test "$@"
+            ' _ -count=1 -timeout 1800s -v -tags jailor_priv \
+              -run 'TestEscape|TestCleanup|TestResource|TestReadOnlyCell' ./internal/jail/
 
-      - name: Verify no jail cgroup or process is left behind
+      - name: Privileged cgroup ration suite
         run: |
           set -euo pipefail
-          if sudo ls /sys/fs/cgroup/jailor 2>/dev/null | grep -q .; then
-            printf 'orphaned jail cgroups remain:\n' >&2
-            sudo ls -1 /sys/fs/cgroup/jailor >&2
+          sudo -E --preserve-env=PATH,HOME,GOCACHE,GOMODCACHE,GOPATH,GOTOOLCHAIN,GOFLAGS \
+            env "PATH=$PATH" "HOME=$HOME" "GOCACHE=$GOCACHE" "GOMODCACHE=$GOMODCACHE" \
+                "GOPATH=$GOPATH" "GOFLAGS=$GOFLAGS" "GOTOOLCHAIN=${GOTOOLCHAIN:-}" \
+            sh -c '
+              set -euo pipefail
+              test "$(id -u)" -eq 0
+              printf "privileged test process: %s\n" "$(id)"
+              exec go test "$@"
+            ' _ -count=1 -timeout 900s -v -tags jailor_priv ./internal/rations/ ./internal/warden/
+
+      - name: Privileged network namespace suite
+        run: |
+          set -euo pipefail
+          sudo -E --preserve-env=PATH,HOME,GOCACHE,GOMODCACHE,GOPATH,GOTOOLCHAIN,GOFLAGS \
+            env "PATH=$PATH" "HOME=$HOME" "GOCACHE=$GOCACHE" "GOMODCACHE=$GOMODCACHE" \
+                "GOPATH=$GOPATH" "GOFLAGS=$GOFLAGS" "GOTOOLCHAIN=${GOTOOLCHAIN:-}" \
+            sh -c '
+              set -euo pipefail
+              test "$(id -u)" -eq 0
+              printf "privileged test process: %s\n" "$(id)"
+              exec go test "$@"
+            ' _ -count=1 -timeout 900s -v -tags jailor_priv ./internal/gate/
+
+      - name: Leak audit
+        run: |
+          set -euo pipefail
+          failed=0
+
+          jail_init_procs="$(sudo ps -eo pid=,args= | awk 'NF >= 3 && $2 ~ /jail/ { n = $NF; if (n == "__init" || n == "__stager" || n == "__visitor" || n == "__nsenter") print }')"
+          if [ -n "$jail_init_procs" ]; then
+            printf 'orphaned jail processes remain:\n%s\n' "$jail_init_procs" >&2
+            failed=1
+          else
+            printf 'no jail init, stager, visitor or nsenter process remains\n'
+          fi
+
+          cgroup2_mount="$(sudo awk '$0 ~ / - cgroup2 / { print $5; exit }' /proc/self/mountinfo)"
+          if [ -z "$cgroup2_mount" ]; then
+            printf 'no cgroup2 mount found, cannot audit the Jailor cgroup hierarchy\n' >&2
             exit 1
           fi
-          if pgrep -u root -f '__init' >/dev/null 2>&1; then
-            printf 'orphaned jail init processes remain\n' >&2
-            pgrep -a -u root -f '__init' >&2
+          if [ -d "$cgroup2_mount/jailor" ]; then
+            leftover_cgroups="$(sudo ls -1 "$cgroup2_mount/jailor")"
+            if [ -n "$leftover_cgroups" ]; then
+              printf 'orphaned jailor cgroups remain in %s/jailor:\n%s\n' "$cgroup2_mount" "$leftover_cgroups" >&2
+              failed=1
+            else
+              printf 'no orphaned jailor cgroups remain\n'
+            fi
+          else
+            printf 'no jailor cgroup hierarchy was created\n'
+          fi
+
+          leaked_mounts="$(findmnt -rno TARGET | awk '/jailor|[/]\.oldroot/')"
+          if [ -n "$leaked_mounts" ]; then
+            printf 'leaked Jailor mountpoints remain:\n%s\n' "$leaked_mounts" >&2
+            failed=1
+          else
+            printf 'no leaked Jailor mountpoints remain\n'
+          fi
+
+          leaked_links="$(ip -o link show | awk '$1 ~ /^(jailor0|v[a-f0-9]*|test-br[^ ]*|test-v[hg][^ ]*|veth-[^ ]*|vdeadbeef|vtestal01)$/')"
+          if [ -n "$leaked_links" ]; then
+            printf 'leaked Jailor or test network interfaces remain:\n%s\n' "$leaked_links" >&2
+            failed=1
+          else
+            printf 'no leaked Jailor or test network interfaces remain\n'
+          fi
+
+          leaked_cells="$(find /tmp -maxdepth 1 -name 'jailor-*' -print)"
+          if [ -n "$leaked_cells" ]; then
+            printf 'temporary Jailor directories remain:\n%s\n' "$leaked_cells" >&2
+            failed=1
+          else
+            printf 'no temporary Jailor directories remain\n'
+          fi
+
+          if [ "$failed" -ne 0 ]; then
             exit 1
           fi
-          printf 'no leaked cgroups or jail processes\n'
+          printf 'leak audit clean\n'

@@ -1,3 +1,5 @@
+//go:build linux && jailor_priv
+
 package rations
 
 import (
@@ -13,11 +15,11 @@ import (
 func limitMount(t *testing.T) string {
 	t.Helper()
 	if os.Geteuid() != 0 {
-		t.Skip("requires root to enforce cgroup limits; skipping")
+		t.Fatalf("cgroup limits require host root, euid is %d", os.Geteuid())
 	}
 	mount, err := FindCgroupV2Mount()
 	if err != nil {
-		t.Skipf("no cgroup v2 hierarchy: %v", err)
+		t.Fatalf("the privileged tier requires a cgroup v2 hierarchy: %v", err)
 	}
 	return mount
 }
@@ -33,7 +35,7 @@ func TestMemoryLimitEnforced(t *testing.T) {
 
 	c, ok := startMemSucker(t)
 	if !ok {
-		t.Skip("no memory-allocation tool available")
+		t.Fatal("the privileged tier requires python3 on the runner to exercise the memory limit")
 	}
 	defer func() {
 		_ = c.Process.Kill()

@@ -1,4 +1,3 @@
-# Binary build outputs (go build -o)
 /jailor
 /jailord
 /probe
@@ -9,10 +8,8 @@
 coverage.*
 *.exe
 
-# Machine-specific prepared rootfs (host binaries & glibc; regenerable with scripts/build-rootfs.sh)
 /rootfs/
 
-# Local runtime state written by jailor/jailord (default state root is per-user, outside the repo; these guard against overriding --ledger into the checkout)
 /.jailor/
 /ledger/
 /store/
@@ -20,13 +17,11 @@ coverage.*
 /containers/
 *.sock
 
-# Registry credentials — never commit these (default location is ~/.config/jailor/auth.json)
 auth.json
 *jailor-auth*
 *.pem
 *.key
 
-# Editor & OS junk
 .idea/
 .vscode/
 *.swp
@@ -35,12 +30,9 @@ auth.json
 .DS_Store
 Thumbs.db
 
-
-# Local environment / secrets
 .env
 .env.*
 !.env.example
 
-# Temporary files
 *.tmp
 *.bak

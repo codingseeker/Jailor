@@ -1,4 +1,4 @@
-//go:build linux
+//go:build linux && jailor_priv
 
 package gate
 
@@ -40,7 +40,7 @@ func waitFor(t *testing.T, pid int, fn func() error, what string) {
 func TestGateBridgeSetupAndConnectivity(t *testing.T) {
 	requireRoot(t)
 	if _, err := exec.LookPath("sleep"); err != nil {
-		t.Skip("sleep not found; skipping")
+		t.Fatalf("the privileged tier requires sleep on the runner")
 	}
 
 	child, pid := spawnNetns(t)
@@ -104,7 +104,7 @@ func TestGateSetupMissingPid(t *testing.T) {
 func TestGateSetupNone(t *testing.T) {
 	requireRoot(t)
 	if _, err := exec.LookPath("sleep"); err != nil {
-		t.Skip("sleep not found; skipping")
+		t.Fatalf("the privileged tier requires sleep on the runner")
 	}
 
 	child, pid := spawnNetns(t)
@@ -124,7 +124,7 @@ func TestGateSetupNone(t *testing.T) {
 func TestGateTeardownIdempotent(t *testing.T) {
 	requireRoot(t)
 	if _, err := exec.LookPath("sleep"); err != nil {
-		t.Skip("sleep not found; skipping")
+		t.Fatalf("the privileged tier requires sleep on the runner")
 	}
 
 	child, pid := spawnNetns(t)

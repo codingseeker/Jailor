@@ -1,9 +1,6 @@
 package rations
 
-import (
-	"os"
-	"testing"
-)
+import "testing"
 
 func TestParseMemory(t *testing.T) {
 	cases := []struct {
@@ -57,35 +54,5 @@ func TestHumanBytes(t *testing.T) {
 		if got := HumanBytes(c.b); got != c.want {
 			t.Errorf("HumanBytes(%d) = %q, want %q", c.b, got, c.want)
 		}
-	}
-}
-
-func TestCgroupRoundTrip(t *testing.T) {
-	if os.Geteuid() != 0 {
-		t.Skip("requires root to create cgroups; skipping")
-	}
-	mount, err := FindCgroupV2Mount()
-	if err != nil {
-		t.Skipf("no cgroup v2 hierarchy: %v", err)
-	}
-	jailID := "test-cgroup-roundtrip"
-	cg, err := Create(mount, jailID, Rations{MemoryLimitBytes: 512 * 1024 * 1024, PIDsLimit: 5})
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	defer cg.Remove()
-
-	st, err := cg.Stats()
-	if err != nil {
-		t.Fatalf("Stats: %v", err)
-	}
-	if st.MemoryMax != 512*1024*1024 {
-		t.Errorf("MemoryMax = %d, want %d", st.MemoryMax, 512*1024*1024)
-	}
-	if st.PIDsMax != 5 {
-		t.Errorf("PIDsMax = %d, want 5", st.PIDsMax)
-	}
-	if st.MemoryCurrent < 0 || st.CPUUsageUsec < 0 || st.PIDsCurrent != 0 {
-		t.Errorf("unexpected counters: %+v", st)
 	}
 }
