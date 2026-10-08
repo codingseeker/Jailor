@@ -260,14 +260,14 @@ jobs:
       - name: Preflight C mount propagation in a private mount namespace
         run: |
           set -euo pipefail
-          sudo unshare --mount sh -c 'set -euo pipefail; mount --make-rprivate /'
+          sudo unshare --mount bash -c 'set -euo pipefail; mount --make-rprivate /'
           printf 'preflight C: mount --make-rprivate ok in a private mount namespace\n'
 
       - name: Preflight D tmpfs in a private mount namespace
         run: |
           set -euo pipefail
           probe="$(mktemp -d)"
-          sudo unshare --mount sh -c '
+          sudo unshare --mount bash -c '
             set -euo pipefail
             mount -t tmpfs tmpfs "$1"
             umount "$1"
@@ -279,7 +279,7 @@ jobs:
         run: |
           set -euo pipefail
           probe="$(mktemp -d)"
-          sudo unshare --mount sh -c '
+          sudo unshare --mount bash -c '
             set -euo pipefail
             mount -t tmpfs tmpfs "$1"
             mknod "$1/null" c 1 3
@@ -336,7 +336,7 @@ jobs:
           sudo -E --preserve-env=PATH,HOME,GOCACHE,GOMODCACHE,GOPATH,GOTOOLCHAIN,GOFLAGS \
             env "PATH=$PATH" "HOME=$HOME" "GOCACHE=$GOCACHE" "GOMODCACHE=$GOMODCACHE" \
                 "GOPATH=$GOPATH" "GOFLAGS=$GOFLAGS" "GOTOOLCHAIN=${GOTOOLCHAIN:-}" \
-            sh -c '
+            bash -c '
               set -euo pipefail
               test "$(id -u)" -eq 0
               printf "privileged test process: %s\n" "$(id)"
@@ -350,7 +350,7 @@ jobs:
           sudo -E --preserve-env=PATH,HOME,GOCACHE,GOMODCACHE,GOPATH,GOTOOLCHAIN,GOFLAGS \
             env "PATH=$PATH" "HOME=$HOME" "GOCACHE=$GOCACHE" "GOMODCACHE=$GOMODCACHE" \
                 "GOPATH=$GOPATH" "GOFLAGS=$GOFLAGS" "GOTOOLCHAIN=${GOTOOLCHAIN:-}" \
-            sh -c '
+            bash -c '
               set -euo pipefail
               test "$(id -u)" -eq 0
               printf "privileged test process: %s\n" "$(id)"
@@ -364,7 +364,7 @@ jobs:
           sudo -E --preserve-env=PATH,HOME,GOCACHE,GOMODCACHE,GOPATH,GOTOOLCHAIN,GOFLAGS \
             env "PATH=$PATH" "HOME=$HOME" "GOCACHE=$GOCACHE" "GOMODCACHE=$GOMODCACHE" \
                 "GOPATH=$GOPATH" "GOFLAGS=$GOFLAGS" "GOTOOLCHAIN=${GOTOOLCHAIN:-}" \
-            sh -c '
+            bash -c '
               set -euo pipefail
               test "$(id -u)" -eq 0
               printf "privileged test process: %s\n" "$(id)"
@@ -377,7 +377,7 @@ jobs:
           sudo -E --preserve-env=PATH,HOME,GOCACHE,GOMODCACHE,GOPATH,GOTOOLCHAIN,GOFLAGS \
             env "PATH=$PATH" "HOME=$HOME" "GOCACHE=$GOCACHE" "GOMODCACHE=$GOMODCACHE" \
                 "GOPATH=$GOPATH" "GOFLAGS=$GOFLAGS" "GOTOOLCHAIN=${GOTOOLCHAIN:-}" \
-            sh -c '
+            bash -c '
               set -euo pipefail
               test "$(id -u)" -eq 0
               printf "privileged test process: %s\n" "$(id)"
