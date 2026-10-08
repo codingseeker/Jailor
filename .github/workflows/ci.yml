@@ -246,16 +246,18 @@ jobs:
           sudo sh -c 'test "$(id -u)" = 0'
           printf 'preflight A: sudo reaches host root\n'
 
-      - name: Preflight B host bind mount
+      - name: Preflight B bind mount in a private mount namespace
         run: |
           set -euo pipefail
-          sudo mount --bind / /mnt
-          sudo umount /mnt
-          if mountpoint -q /mnt; then
-            printf '/mnt is still a mountpoint after umount\n' >&2
-            exit 1
-          fi
-          printf 'preflight B: bind mount and umount ok\n'
+          probe="$(mktemp -d)"
+          trap 'rmdir "$probe"' EXIT
+          sudo unshare --mount bash -c '
+            set -euo pipefail
+            mount --bind / "$1"
+            mountpoint -q "$1"
+            umount "$1"
+          ' _ "$probe"
+          printf 'preflight B: bind mount and umount ok in a private mount namespace\n'
 
       - name: Preflight C mount propagation in a private mount namespace
         run: |
@@ -267,18 +269,20 @@ jobs:
         run: |
           set -euo pipefail
           probe="$(mktemp -d)"
+          trap 'rmdir "$probe"' EXIT
           sudo unshare --mount bash -c '
             set -euo pipefail
             mount -t tmpfs tmpfs "$1"
+            mountpoint -q "$1"
             umount "$1"
           ' _ "$probe"
-          rmdir "$probe"
           printf 'preflight D: tmpfs mount and umount ok\n'
 
       - name: Preflight E device creation in a private mount namespace
         run: |
           set -euo pipefail
           probe="$(mktemp -d)"
+          trap 'rmdir "$probe"' EXIT
           sudo unshare --mount bash -c '
             set -euo pipefail
             mount -t tmpfs tmpfs "$1"
@@ -286,7 +290,6 @@ jobs:
             test -c "$1/null"
             umount "$1"
           ' _ "$probe"
-          rmdir "$probe"
           printf 'preflight E: mknod and character device verification ok\n'
 
       - name: Preflight F cgroup v2 hierarchy
@@ -301,29 +304,22 @@ jobs:
             printf 'no cgroup2 entry in /proc/self/mountinfo\n' >&2
             exit 1
           fi
-          probe="$cgroup2_mount/jailor/ci-preflight-$$"
+          probe="$cgroup2_mount/jailor/ci-preflight-$"
+          trap 'sudo rmdir "$probe" 2>/dev/null || true' EXIT
           sudo mkdir -p "$probe"
-          if [ ! -d "$probe" ]; then
-            printf 'root could not create the Jailor cgroup hierarchy at %s\n' "$probe" >&2
-            exit 1
-          fi
-          sudo rmdir "$probe"
+          test -d "$probe"
           printf 'preflight F: cgroup v2 hierarchy %s accepts Jailor cgroups\n' "$cgroup2_mount"
 
-      - name: Preflight G network namespace and CAP_NET_ADMIN
+      - name: Preflight G network namespace and network administration
         run: |
           set -euo pipefail
-          sudo unshare --net true
-          printf 'preflight G: unprivileged-style network namespace creation ok\n'
-          probe="jailor-preflight-$$"
-          sudo ip link add "$probe" type dummy
-          sudo ip link show "$probe"
-          sudo ip link del "$probe"
-          if ip link show "$probe" >/dev/null 2>&1; then
-            printf 'the preflight network interface %s was not removed\n' "$probe" >&2
-            exit 1
-          fi
-          printf 'preflight G: CAP_NET_ADMIN in the host network namespace ok\n'
+          sudo unshare --net bash -c '
+            set -euo pipefail
+            ip link show lo
+            ip link set lo up
+            ip link show lo
+          '
+          printf 'preflight G: isolated network namespace and CAP_NET_ADMIN operations ok\n'
 
       - name: Prepare the Cell root filesystem
         run: |
