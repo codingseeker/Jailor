@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime"
+	"strconv"
 	"syscall"
 	"time"
-
-	"jailor/internal/runtimecore"
 )
 
 var escalateAfter = 3 * time.Second
@@ -26,55 +26,69 @@ func escalateTimeout() time.Duration {
 }
 
 func statusCode(ws syscall.WaitStatus) int {
-	return runtimecore.ExitCode(ws)
+	if ws.Signaled() {
+		return 128 + int(ws.Signal())
+	}
+	return ws.ExitStatus()
 }
 
-func servePrisoner(cfg *InitConfig, syncOutFD int) int {
-	argv, env, err := resolveCommand(cfg)
+func exitStatusCode(ws syscall.WaitStatus) int {
+	return statusCode(ws)
+}
+
+func RunInit() int {
+	fd, err := mustGetFD(envPrisonerReadFD)
 	if err != nil {
-		fail(syncOutFD, err)
-		return 127
+		fmt.Fprintln(os.Stderr, err)
+		return 1
 	}
+	prisonerPID, err := readPrisonerPID(fd)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "jail init: %v\n", err)
+		return 1
+	}
+	if self := os.Getpid(); self != 1 {
+		fmt.Fprintf(os.Stderr, "jail init: refusing to supervise outside a pid namespace (pid %d)\n", self)
+		return 1
+	}
+
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 
 	s := newSupervisor(escalateTimeout())
 	s.setup()
 	defer s.stop()
-
-	pid, err := forkPrisoner(argv, env)
-	if err != nil {
-		fail(syncOutFD, err)
-		return 127
-	}
-	s.prisonerPID = pid
-	s.pgid = pid
-
-	if err := signalReadyPID(syncOutFD, pid); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-
+	rawUnblockSupervisorSignals()
+	s.prisonerPID = prisonerPID
+	s.pgid = prisonerPID
 	return s.run()
 }
 
-func forkPrisoner(argv, env []string) (int, error) {
-	attr := &syscall.ProcAttr{
-		Dir:   "/",
-		Env:   env,
-		Files: []uintptr{0, 1, 2},
-		Sys:   &syscall.SysProcAttr{Setpgid: true},
+func readPrisonerPID(fd int) (int, error) {
+	f := os.NewFile(uintptr(fd), "prisoner-pid")
+	defer f.Close()
+	var digits []byte
+	buf := make([]byte, 1)
+	for {
+		n, err := f.Read(buf)
+		if n > 0 {
+			if buf[0] == '\n' {
+				break
+			}
+			digits = append(digits, buf[0])
+		}
+		if err != nil {
+			if len(digits) == 0 {
+				return 0, fmt.Errorf("prisoner pid was not reported: %w", err)
+			}
+			break
+		}
 	}
-	pid, err := syscall.ForkExec(argv[0], argv, attr)
-	if err != nil {
-		return 0, fmt.Errorf("jail: fork prisoner: %w", err)
+	pid, err := strconv.Atoi(string(digits))
+	if err != nil || pid <= 0 {
+		return 0, fmt.Errorf("bad prisoner pid %q", string(digits))
 	}
 	return pid, nil
-}
-
-func signalReadyPID(fd int, pid int) error {
-	f := os.NewFile(uintptr(fd), "sync-out")
-	defer f.Close()
-	_, err := fmt.Fprintf(f, "%c%d\n", syncReady, pid)
-	return err
 }
 
 type supervisor struct {
@@ -104,7 +118,10 @@ func (s *supervisor) stop() {
 }
 
 func (s *supervisor) run() int {
-	s.reap()
+	code, done := s.reap()
+	if done {
+		return code
+	}
 
 	escalate := time.NewTimer(s.timeout)
 	if !escalate.Stop() {
@@ -119,7 +136,6 @@ func (s *supervisor) run() int {
 			}
 		case sig := <-s.term:
 			if escalateArmed {
-
 				escalate.Stop()
 				escalateArmed = false
 				s.signalTree(syscall.SIGKILL)
@@ -143,7 +159,9 @@ func terminatingSignal(sig os.Signal) syscall.Signal {
 }
 
 func (s *supervisor) signalTree(sig syscall.Signal) {
-	_ = syscall.Kill(-s.pgid, sig)
+	if err := syscall.Kill(-s.pgid, sig); err != nil {
+		_ = syscall.Kill(s.prisonerPID, sig)
+	}
 }
 
 func (s *supervisor) reap() (int, bool) {

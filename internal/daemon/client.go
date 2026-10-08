@@ -293,7 +293,12 @@ func (c *Client) Events() (*EventStream, *api.Error) {
 		_ = conn.Close()
 		return nil, api.Internal(err)
 	}
-	return &EventStream{conn: conn, dec: json.NewDecoder(conn)}, nil
+	stream := &EventStream{conn: conn, dec: json.NewDecoder(conn)}
+	if _, err := stream.NextWithin(10 * time.Second); err != nil {
+		_ = conn.Close()
+		return nil, api.Internal(fmt.Errorf("event stream subscription failed: %w", err))
+	}
+	return stream, nil
 }
 
 type EventStream struct {
@@ -307,6 +312,16 @@ func (s *EventStream) Next() (*api.Event, error) {
 		return nil, err
 	}
 	return &ev, nil
+}
+
+func (s *EventStream) NextWithin(d time.Duration) (*api.Event, error) {
+	if err := s.conn.SetReadDeadline(time.Now().Add(d)); err != nil {
+		return nil, err
+	}
+	defer func() {
+		_ = s.conn.SetReadDeadline(time.Time{})
+	}()
+	return s.Next()
 }
 
 func (s *EventStream) Close() {

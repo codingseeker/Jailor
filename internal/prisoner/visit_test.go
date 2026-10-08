@@ -43,8 +43,10 @@ func visitorProbe(kind string) int {
 
 func TestMain(m *testing.M) {
 	switch {
-	case len(os.Args) > 1 && os.Args[1] == "__init":
+	case len(os.Args) > 1 && os.Args[1] == jail.InitArg:
 		os.Exit(jail.RunInit())
+	case len(os.Args) > 1 && os.Args[1] == jail.StagerArg:
+		os.Exit(jail.RunStager())
 	case len(os.Args) > 1 && os.Args[1] == "__nsenter":
 		os.Exit(jail.RunNSEnter())
 	case len(os.Args) > 1 && os.Args[1] == "__visitor":

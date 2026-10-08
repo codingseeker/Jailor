@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"syscall"
 )
 
 const (
@@ -26,7 +27,7 @@ func RunVisitor() int {
 	}
 	f := os.NewFile(uintptr(cfgFD), "visitor-config")
 	defer f.Close()
-	data, err := readAll(f)
+	data, err := readAllFile(f)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "visitor: read config: %v\n", err)
 		return 1
@@ -41,13 +42,45 @@ func RunVisitor() int {
 		return 1
 	}
 
-	if err := applyRestrictions(&cfg); err != nil {
+	runtimeLockThread()
+
+	if err := applyProcessRestrictions(&cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "visitor: %v\n", err)
 		return 1
 	}
-	if err := execPrisoner(&cfg); err != nil {
+	argv, err := resolvePrisonerCommand(&cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "visitor: failed to resolve prisoner: %v\n", err)
+		return 127
+	}
+	env, err := prisonerEnvironment(&cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "visitor: failed to build environment: %v\n", err)
+		return 127
+	}
+	if err := syscall.Exec(argv[0], argv, env); err != nil {
 		fmt.Fprintf(os.Stderr, "visitor: failed to exec prisoner: %v\n", err)
 		return 127
 	}
 	return 0
+}
+
+func applyProcessRestrictions(cfg *InitConfig) error {
+	if err := applyNoNewPrivsPolicy(cfg); err != nil {
+		return err
+	}
+	if seccompRequested(cfg) {
+		if _, err := buildSeccompFilter(cfg); err != nil {
+			return err
+		}
+		if err := applySeccompProfile(seccompProfileName(cfg)); err != nil {
+			return err
+		}
+	}
+	if cfg.LSM != "" {
+		if err := applyLSM(cfg.LSM); err != nil {
+			return err
+		}
+	}
+	return applyCapabilityPolicy(cfg.Capabilities)
 }

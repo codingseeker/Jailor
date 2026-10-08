@@ -9,9 +9,11 @@ import (
 
 const (
 	extraConfig = iota
-	extraSyncIn
-	extraSyncOut
-	extraStdio
+	extraRelease
+	extraReady
+	extraInitPID
+	extraPrisonerRead
+	extraPrisonerWrite
 
 	baseFD = 3
 )
@@ -49,15 +51,15 @@ type InitConfig struct {
 }
 
 const (
-	envInit      = "JAILOR_INIT"
-	envConfigFD  = "JAILOR_CONFIG_FD"
-	envSyncInFD  = "JAILOR_SYNCIN_FD"
-	envSyncOutFD = "JAILOR_SYNCOUT_FD"
+	envInit            = "JAILOR_INIT"
+	envNewPIDNS        = "JAILOR_NEWPIDNS"
+	envConfigFD        = "JAILOR_CONFIG_FD"
+	envReleaseFD       = "JAILOR_RELEASE_FD"
+	envReadyFD         = "JAILOR_READY_FD"
+	envInitPIDFD       = "JAILOR_INITPID_FD"
+	envPrisonerReadFD  = "JAILOR_PRISONER_FD"
+	envPrisonerWriteFD = "JAILOR_PRISONER_WFD"
 )
-
-func (c *InitConfig) configFD() int  { return baseFD + extraConfig }
-func (c *InitConfig) syncInFD() int  { return baseFD + extraSyncIn }
-func (c *InitConfig) syncOutFD() int { return baseFD + extraSyncOut }
 
 func (c *InitConfig) marshal() ([]byte, error) {
 	data, err := json.Marshal(c)

@@ -13,10 +13,14 @@ import (
 	"jailor/internal/api"
 	"jailor/internal/daemon"
 	"jailor/internal/engine"
+	"jailor/internal/jail"
 	"jailor/internal/ledger"
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == jail.StagerArg {
+		os.Exit(jail.RunStager())
+	}
 	dir := flag.String("ledger", "", "state root (defaults to the system/ledger default)")
 	socket := flag.String("socket", "", "unix socket path (default: <ledger>/jailord.sock)")
 	flag.Parse()

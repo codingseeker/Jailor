@@ -191,26 +191,17 @@ func TestEventsStreamingPublishesCreatedAndRemoved(t *testing.T) {
 		t.Fatalf("Remove: %v", aerr)
 	}
 
-	deadline := time.After(5 * time.Second)
 	var created, removed bool
-	for {
-		ev, err := stream.Next()
+	for !created || !removed {
+		ev, err := stream.NextWithin(5 * time.Second)
 		if err != nil {
-			t.Fatalf("stream error: %v", err)
+			t.Fatalf("waiting for events: %v; created=%v removed=%v", err, created, removed)
 		}
 		switch ev.Type {
 		case api.EventJailCreated:
 			created = true
 		case api.EventJailRemoved:
 			removed = true
-		}
-		if created && removed {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatalf("timed out; created=%v removed=%v", created, removed)
-		default:
 		}
 	}
 }

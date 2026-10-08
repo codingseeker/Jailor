@@ -2,18 +2,46 @@ name: ci
 
 on:
   push:
+    branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.25.12"
+  GOFLAGS: "-mod=mod"
+
 jobs:
-  build-and-test:
-    runs-on: ubuntu-latest
+  verify:
+    name: format / build / vet / unit / race
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out the repository
+        uses: actions/checkout@v4
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: ${{ env.GO_VERSION }}
+          # The module has no external dependencies, so there is no go.sum to
+          # cache. Enabling the cache would only emit a warning.
+          cache: false
+
+      - name: gofmt
+        run: |
+          set -euo pipefail
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            printf 'gofmt reported unformatted files:\n%s\n' "$unformatted" >&2
+            exit 1
+          fi
 
       - name: Build
         run: go build ./...
@@ -21,25 +49,162 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      - name: Test (race), excluding internal/jail
-        run: go test -race $(go list ./... | grep -v '/internal/jail$')
+      - name: Unit tests
+        run: go test -count=1 ./...
 
-  jail-integration:
-    runs-on: ubuntu-latest
-    needs: build-and-test
+      - name: Race tests
+        run: go test -count=1 -race ./...
+
+  rootless:
+    name: rootless jail integration
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out the repository
+        uses: actions/checkout@v4
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
 
-      - name: Prepare rootfs for jail tests
+      - name: Print kernel and namespace diagnostics
         run: |
-          if [ -x scripts/build-rootfs.sh ]; then
-            ./scripts/build-rootfs.sh rootfs
+          set -euo pipefail
+          printf 'ubuntu: %s\n' "$(lsb_release -ds 2>/dev/null || echo unknown)"
+          uname -a
+          uname -r
+          go version
+          id
+          printf 'cgroup version: '
+          if [ -f /sys/fs/cgroup/cgroup.controllers ]; then
+            printf 'v2\n'
+          else
+            printf 'v1 or unavailable\n'
+          fi
+          printf 'user namespace: '
+          if [ -e /proc/self/uid_map ] && [ -w /proc/self/uid_map ]; then
+            printf 'available\n'
+          else
+            printf 'restricted\n'
+          fi
+          for ns in pid user mount net; do
+            printf '%s namespace: ' "$ns"
+            readlink "/proc/self/ns/$ns" || printf 'unavailable\n'
+          done
+          printf 'seccomp support: '
+          grep -E '^Seccomp' /proc/self/status || true
+          printf 'apparmor: '
+          if [ -d /sys/kernel/security/apparmor ] && [ -f /sys/kernel/security/apparmor/profiles ]; then
+            printf 'present\n'
+          else
+            printf 'absent\n'
+          fi
+          grep -E '^(CapEff|CapBnd|NoNewPrivs):' /proc/self/status
+
+      - name: Prepare the Cell root filesystem
+        run: ./scripts/build-rootfs.sh rootfs
+
+      - name: Rootless jail integration tests
+        run: go test -count=1 -timeout 600s ./internal/jail/ ./internal/prisoner/
+
+  rootful:
+    name: rootful jail integration
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+
+      - name: Print kernel and namespace diagnostics
+        run: |
+          set -euo pipefail
+          printf 'ubuntu: %s\n' "$(lsb_release -ds 2>/dev/null || echo unknown)"
+          uname -a
+          uname -r
+          go version
+          sudo id
+          printf 'cgroup version: '
+          if [ -f /sys/fs/cgroup/cgroup.controllers ]; then
+            printf 'v2\n'
+            cat /proc/self/cgroup
+          else
+            printf 'v1 or unavailable\n'
+            cat /proc/self/cgroup
+          fi
+          for ns in pid user mount net; do
+            printf '%s namespace: ' "$ns"
+            sudo readlink "/proc/1/ns/$ns" || printf 'unavailable\n'
+          done
+          printf 'seccomp support: '
+          grep -E '^Seccomp' /proc/self/status || true
+          printf 'apparmor: '
+          if [ -d /sys/kernel/security/apparmor ] && [ -f /sys/kernel/security/apparmor/profiles ]; then
+            printf 'present\n'
+          else
+            printf 'absent\n'
+          fi
+          sudo grep -E '^(CapEff|CapBnd|NoNewPrivs):' /proc/self/status
+          printf 'mount permissions: '
+          if sudo mount -t tmpfs tmpfs /mnt && sudo umount /mnt; then
+            printf 'root may mount\n'
+          else
+            printf 'restricted\n'
           fi
 
-      - name: jail integration tests (needs root + kernel namespaces)
-        run: sudo -E env "PATH=$PATH" go test -race ./internal/jail/
+      - name: Prepare the Cell root filesystem
+        run: ./scripts/build-rootfs.sh rootfs
+
+      - name: Run the privileged jail integration suite
+        env:
+          JAILOR_TEST_ROOT: "1"
+        run: |
+          set -euo pipefail
+          sudo -E --preserve-env=PATH,HOME,GOCACHE,GOMODCACHE,GOPATH,GOTOOLCHAIN \
+            env "PATH=$PATH" "HOME=$HOME" \
+                "GOCACHE=$GOCACHE" "GOMODCACHE=$GOMODCACHE" "GOPATH=$GOPATH" \
+            go test -count=1 -race -timeout 900s -v ./internal/jail/
+
+      - name: Run the privileged security and escape suite
+        env:
+          JAILOR_TEST_ROOT: "1"
+        run: |
+          set -euo pipefail
+          sudo -E --preserve-env=PATH,HOME,GOCACHE,GOMODCACHE,GOPATH,GOTOOLCHAIN \
+            env "PATH=$PATH" "HOME=$HOME" \
+                "GOCACHE=$GOCACHE" "GOMODCACHE=$GOMODCACHE" "GOPATH=$GOPATH" \
+            go test -count=1 -timeout 900s -run 'TestEscape|TestCleanup|TestResource' -v ./internal/jail/
+
+      - name: Run the privileged cgroup resource suite
+        env:
+          JAILOR_TEST_ROOT: "1"
+        run: |
+          set -euo pipefail
+          sudo -E --preserve-env=PATH,HOME,GOCACHE,GOMODCACHE,GOPATH,GOTOOLCHAIN \
+            env "PATH=$PATH" "HOME=$HOME" \
+                "GOCACHE=$GOCACHE" "GOMODCACHE=$GOMODCACHE" "GOPATH=$GOPATH" \
+            go test -count=1 -timeout 900s -v ./internal/rations/
+
+      - name: Verify no jail cgroup or process is left behind
+        run: |
+          set -euo pipefail
+          if sudo ls /sys/fs/cgroup/jailor 2>/dev/null | grep -q .; then
+            printf 'orphaned jail cgroups remain:\n' >&2
+            sudo ls -1 /sys/fs/cgroup/jailor >&2
+            exit 1
+          fi
+          if pgrep -u root -f '__init' >/dev/null 2>&1; then
+            printf 'orphaned jail init processes remain\n' >&2
+            pgrep -a -u root -f '__init' >&2
+            exit 1
+          fi
+          printf 'no leaked cgroups or jail processes\n'

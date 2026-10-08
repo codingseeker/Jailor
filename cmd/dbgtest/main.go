@@ -18,7 +18,10 @@ func logf(f string, a ...any) {
 }
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "__init" {
+	if len(os.Args) > 1 && os.Args[1] == jail.StagerArg {
+		os.Exit(jail.RunStager())
+	}
+	if len(os.Args) > 1 && os.Args[1] == jail.InitArg {
 		logf("runinit start")
 		os.Exit(jail.RunInit())
 	}

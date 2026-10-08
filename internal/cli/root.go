@@ -28,8 +28,10 @@ func (r *Root) Run(args []string) int {
 	switch args[0] {
 	case "run":
 		return r.run(args[1:])
-	case "__init":
+	case jail.InitArg:
 		return runInit()
+	case jail.StagerArg:
+		return jail.RunStager()
 	case "__nsenter":
 		return jail.RunNSEnter()
 	case "__visitor":

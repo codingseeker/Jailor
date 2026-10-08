@@ -141,6 +141,7 @@ const (
 	EventJailRecovered = "jail.recovered"
 	EventDaemonStarted = "daemon.started"
 	EventDaemonStopped = "daemon.stopped"
+	EventSubscribed    = "events.subscribed"
 )
 
 type ShutdownOk struct {

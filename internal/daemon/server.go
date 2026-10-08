@@ -369,6 +369,13 @@ func (s *Server) streamEvents(conn net.Conn) {
 	ch, unsub := s.eng.SubscribeEvents()
 	defer unsub()
 	enc := json.NewEncoder(conn)
+	if err := enc.Encode(api.Event{
+		Version: api.Version,
+		Type:    api.EventSubscribed,
+		Message: "event stream ready",
+	}); err != nil {
+		return
+	}
 	for ev := range ch {
 		if err := enc.Encode(ev); err != nil {
 			return

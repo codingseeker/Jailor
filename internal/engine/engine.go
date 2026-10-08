@@ -26,10 +26,24 @@ type Engine struct {
 }
 
 type run struct {
+	engine *Engine
 	id     string
 	cancel context.CancelFunc
 	done   chan struct{}
+	mu     sync.Mutex
 	code   int
+}
+
+func (r *run) setCode(code int) {
+	r.mu.Lock()
+	r.code = code
+	r.mu.Unlock()
+}
+
+func (r *run) exitCode() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.code
 }
 
 func New(dir string) (*Engine, error) {

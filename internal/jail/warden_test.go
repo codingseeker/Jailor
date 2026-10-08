@@ -64,8 +64,8 @@ func runCmd(t *testing.T, argv []string, stdin io.Reader, stdout, stderr io.Writ
 }
 
 func TestStdoutForwarding(t *testing.T) {
-	var out bytes.Buffer
-	code, err := runCmd(t, []string{"/bin/echo", "hello-out"}, nil, &out, nil, nil)
+	out := &syncBuf{}
+	code, err := runCmd(t, []string{"/bin/echo", "hello-out"}, nil, out, nil, nil)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -78,8 +78,8 @@ func TestStdoutForwarding(t *testing.T) {
 }
 
 func TestStderrForwarding(t *testing.T) {
-	var out, errOut bytes.Buffer
-	code, err := runCmd(t, []string{"/bin/sh", "-c", `echo err-goes-here 1>&2`}, nil, &out, &errOut, nil)
+	out, errOut := &syncBuf{}, &syncBuf{}
+	code, err := runCmd(t, []string{"/bin/sh", "-c", `echo err-goes-here 1>&2`}, nil, out, errOut, nil)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -95,9 +95,9 @@ func TestStderrForwarding(t *testing.T) {
 }
 
 func TestStdinForwarding(t *testing.T) {
-	var out bytes.Buffer
+	out := &syncBuf{}
 	stdin := strings.NewReader("from-stdin\n")
-	code, err := runCmd(t, []string{"/bin/cat"}, stdin, &out, nil, nil)
+	code, err := runCmd(t, []string{"/bin/cat"}, stdin, out, nil, nil)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -110,9 +110,9 @@ func TestStdinForwarding(t *testing.T) {
 }
 
 func TestEnvironmentPropagation(t *testing.T) {
-	var out bytes.Buffer
+	out := &syncBuf{}
 	env := []string{"JAILOR_TEST_MARK=env-ok", "PATH=/bin:/usr/bin"}
-	code, err := runCmd(t, []string{"/usr/bin/env"}, nil, &out, nil, env)
+	code, err := runCmd(t, []string{"/usr/bin/env"}, nil, out, nil, env)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -190,10 +190,10 @@ func TestSigtermHandling(t *testing.T) {
 		t.Fatalf("run: %v", err)
 	}
 	if code != 0 {
-		t.Fatalf("exit code = %d", code)
+		t.Fatalf("exit code = %d, output: %s", code, out)
 	}
-	if !strings.Contains(out.String(), "sig=caught") {
-		t.Errorf("SIGTERM not caught by Prisoner:\n%s", out.String())
+	if !strings.Contains(out, "sig=caught") {
+		t.Errorf("SIGTERM not caught by Prisoner:\n%s", out)
 	}
 }
 
@@ -203,10 +203,10 @@ func TestSigintHandling(t *testing.T) {
 		t.Fatalf("run: %v", err)
 	}
 	if code != 0 {
-		t.Fatalf("exit code = %d", code)
+		t.Fatalf("exit code = %d, output: %s", code, out)
 	}
-	if !strings.Contains(out.String(), "sig=caught") {
-		t.Errorf("SIGINT not caught by Prisoner:\n%s", out.String())
+	if !strings.Contains(out, "sig=caught") {
+		t.Errorf("SIGINT not caught by Prisoner:\n%s", out)
 	}
 }
 
@@ -239,22 +239,28 @@ func (s *syncBuf) String() string {
 
 func waitOutput(t *testing.T, buf *syncBuf, marker string) error {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
+	deadline := time.NewTimer(10 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
 		if strings.Contains(buf.String(), marker) {
 			return nil
 		}
-		time.Sleep(10 * time.Millisecond)
+		select {
+		case <-ticker.C:
+		case <-deadline.C:
+			return fmt.Errorf("output did not contain %q:\n%s", marker, buf.String())
+		}
 	}
-	return fmt.Errorf("output did not contain %q:\n%s", marker, buf.String())
 }
 
-func runSignalProbe(t *testing.T, sig syscall.Signal) (int, *bytes.Buffer, error) {
+func runSignalProbe(t *testing.T, sig syscall.Signal) (int, string, error) {
 	t.Helper()
 	if !canUseNamespaces() {
 		t.Skip("environment cannot create namespaces")
 	}
-	var out syncBuf
+	out := &syncBuf{}
 	cfg := &InitConfig{
 		Args:      []string{testExe, "__probe", "sig"},
 		MountProc: false,
@@ -265,33 +271,33 @@ func runSignalProbe(t *testing.T, sig syscall.Signal) (int, *bytes.Buffer, error
 		Init:        *cfg,
 		Namespaces:  []bars.Kind{bars.PID, bars.UTS, bars.Mount},
 		Userns:      true,
-		Stdout:      &out,
-		Stderr:      &out,
+		Stdout:      out,
+		Stderr:      out,
 		UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Geteuid(), Size: 1}},
 		GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getegid(), Size: 1}},
 	}
 	child, err := Spawn(opts, cfg)
 	if err != nil {
-		return -1, &bytes.Buffer{}, err
+		return -1, "", err
 	}
 	defer child.Close()
 	if err := child.Start(); err != nil {
-		return -1, &bytes.Buffer{}, err
+		return -1, "", err
 	}
 	if err := child.Release(); err != nil {
-		return -1, &bytes.Buffer{}, err
+		return -1, "", err
 	}
 	if err := child.ReadReady(); err != nil {
-		return -1, &bytes.Buffer{}, err
+		return -1, "", err
 	}
-	if err := waitOutput(t, &out, "sig=ready"); err != nil {
-		return -1, &bytes.Buffer{}, err
+	if err := waitOutput(t, out, "sig=ready"); err != nil {
+		return -1, "", err
 	}
 	if err := child.Signal(sig); err != nil {
-		return -1, &bytes.Buffer{}, err
+		return -1, "", err
 	}
 	code := child.Wait()
-	return code, bytes.NewBufferString(out.String()), nil
+	return code, out.String(), nil
 }
 
 func TestChildCleanup(t *testing.T) {
@@ -343,8 +349,8 @@ func TestChildCleanup(t *testing.T) {
 }
 
 func TestSpaceInArgs(t *testing.T) {
-	var out bytes.Buffer
-	code, err := runCmd(t, []string{"/bin/sh", "-c", `printf 'a b c'`}, nil, &out, nil, nil)
+	out := &syncBuf{}
+	code, err := runCmd(t, []string{"/bin/sh", "-c", `printf 'a b c'`}, nil, out, nil, nil)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}

@@ -1,7 +1,6 @@
 package jail
 
 import (
-	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -25,8 +25,10 @@ func init() {
 
 func TestMain(m *testing.M) {
 	switch {
-	case len(os.Args) > 1 && os.Args[1] == "__init":
+	case len(os.Args) > 1 && os.Args[1] == InitArg:
 		os.Exit(RunInit())
+	case len(os.Args) > 1 && os.Args[1] == StagerArg:
+		os.Exit(RunStager())
 	case len(os.Args) > 1 && os.Args[1] == "__nsenter":
 		os.Exit(RunNSEnter())
 	case len(os.Args) > 1 && os.Args[1] == "__visitor":
@@ -137,12 +139,44 @@ func probe(kind string) int {
 		}
 		for _, line := range strings.Split(string(data), "\n") {
 			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "CapEff:") ||
+			if strings.HasPrefix(line, "CapInh:") ||
+				strings.HasPrefix(line, "CapEff:") ||
 				strings.HasPrefix(line, "CapPrm:") ||
 				strings.HasPrefix(line, "CapBnd:") {
 				kv := strings.SplitN(line, ":", 2)
 				fmt.Printf("caps_%s=%s\n", strings.ToLower(kv[0]), strings.TrimSpace(kv[1]))
 			}
+		}
+	case "env":
+		for _, e := range os.Environ() {
+			fmt.Println(e)
+		}
+	case "fds":
+
+		dir, err := os.Open("/proc/self/fd")
+		if err != nil {
+			fmt.Printf("fds=err:%v\n", err)
+			return 1
+		}
+		self := int(dir.Fd())
+		names, err := dir.Readdirnames(-1)
+		dir.Close()
+		if err != nil {
+			fmt.Printf("fds=err:%v\n", err)
+			return 1
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			fd, convErr := strconv.Atoi(name)
+			if convErr != nil || fd == self {
+				continue
+			}
+			target, err := os.Readlink(filepath.Join("/proc/self/fd", name))
+			if err != nil {
+				fmt.Printf("fd=%s->closed\n", name)
+				continue
+			}
+			fmt.Printf("fd=%s->%s\n", name, target)
 		}
 	case "sig":
 
@@ -217,29 +251,322 @@ func probe(kind string) int {
 		fmt.Printf("write_root=ok\n")
 		os.Remove("/jailor-readonly-test")
 	case "mount-try":
-
 		if err := syscall.Mount("none", "/tmp", "tmpfs", 0, ""); err != nil {
 			fmt.Printf("mount_try=err:%v\n", err)
 			return 0
 		}
 		fmt.Printf("mount_try=ok\n")
+	case "stat":
+
+		target := os.Args[3]
+		info, err := os.Stat(target)
+		if err != nil {
+			fmt.Printf("stat=%s:err:%v\n", target, err)
+			return 0
+		}
+		fmt.Printf("stat=%s:mode:%v\n", target, info.Mode())
+	case "read":
+
+		target := os.Args[3]
+		data, err := os.ReadFile(target)
+		if err != nil {
+			fmt.Printf("read=%s:err:%v\n", target, err)
+			return 0
+		}
+		fmt.Printf("read=%s:%s\n", target, strings.TrimSpace(string(data)))
+	case "write":
+
+		target := os.Args[3]
+		if err := os.WriteFile(target, []byte("escape"), 0o644); err != nil {
+			fmt.Printf("write=%s:err:%v\n", target, err)
+			return 0
+		}
+		fmt.Printf("write=%s:ok\n", target)
+	case "mkdir":
+
+		target := os.Args[3]
+		if err := os.MkdirAll(target, 0o755); err != nil {
+			fmt.Printf("mkdir=%s:err:%v\n", target, err)
+			return 0
+		}
+		fmt.Printf("mkdir=%s:ok\n", target)
+	case "traverse":
+
+		target := os.Args[3]
+		data, err := os.ReadFile(target)
+		if err != nil {
+			fmt.Printf("traverse=%s:err:%v\n", target, err)
+			return 0
+		}
+		fmt.Printf("traverse=%s:readable:%s\n", target, strings.TrimSpace(string(data)))
+	case "unshare-try":
+
+		flags := uintptr(0)
+		for _, name := range os.Args[3:] {
+			switch name {
+			case "pid":
+				flags |= syscall.CLONE_NEWPID
+			case "user":
+				flags |= syscall.CLONE_NEWUSER
+			case "mount":
+				flags |= syscall.CLONE_NEWNS
+			case "net":
+				flags |= syscall.CLONE_NEWNET
+			}
+		}
+		if err := syscall.Unshare(int(flags)); err != nil {
+			fmt.Printf("unshare=err:%v\n", err)
+			return 0
+		}
+		fmt.Printf("unshare=ok\n")
+	case "clone-try":
+
+		flags := uintptr(0)
+		for _, name := range os.Args[3:] {
+			switch name {
+			case "pid":
+				flags |= syscall.CLONE_NEWPID
+			case "user":
+				flags |= syscall.CLONE_NEWUSER
+			case "mount":
+				flags |= syscall.CLONE_NEWNS
+			case "net":
+				flags |= syscall.CLONE_NEWNET
+			}
+		}
+		attr := &syscall.ProcAttr{
+			Dir:   "/",
+			Env:   []string{"PATH=/usr/bin:/bin"},
+			Files: []uintptr{0, 1, 2},
+			Sys:   &syscall.SysProcAttr{Cloneflags: flags},
+		}
+		pid, err := syscall.ForkExec("/bin/true", []string{"/bin/true"}, attr)
+		if err != nil {
+			fmt.Printf("clone=err:%v\n", err)
+			return 0
+		}
+		_, _ = syscall.Wait4(pid, nil, 0, nil)
+		fmt.Printf("clone=ok\n")
+	case "seteuid":
+
+		target := os.Args[3]
+		uid, err := strconv.Atoi(target)
+		if err != nil {
+			fmt.Printf("seteuid=err:%v\n", err)
+			return 0
+		}
+		if err := syscall.Setresuid(uid, uid, uid); err != nil {
+			fmt.Printf("seteuid=%d:err:%v\n", uid, err)
+			return 0
+		}
+		fmt.Printf("seteuid=%d:ok\n", uid)
+	case "setuid-exec":
+
+		target := os.Args[3]
+		uid, err := strconv.Atoi(target)
+		if err != nil {
+			fmt.Printf("setuid=err:%v\n", err)
+			return 0
+		}
+		if err := syscall.Setresuid(uid, uid, uid); err != nil {
+			fmt.Printf("setuid_exec=err:%v\n", err)
+			return 0
+		}
+		if err := syscall.Exec(target, []string{target}, os.Environ()); err != nil {
+			fmt.Printf("setuid_exec=err:%v\n", err)
+			return 0
+		}
+	case "cap-check":
+
+		fmt.Printf("cap_check=ok\n")
+	case "ptrace-try":
+
+		pid, err := strconv.Atoi(os.Args[3])
+		if err != nil {
+			fmt.Printf("ptrace=err:%v\n", err)
+			return 0
+		}
+		if err := syscall.PtraceAttach(pid); err != nil {
+			fmt.Printf("ptrace=err:%v\n", err)
+			return 0
+		}
+		_ = syscall.PtraceDetach(pid)
+		fmt.Printf("ptrace=ok\n")
+	case "device-read":
+
+		target := os.Args[3]
+		data, err := os.ReadFile(target)
+		if err != nil {
+			fmt.Printf("device=%s:err:%v\n", target, err)
+			return 0
+		}
+		fmt.Printf("device=%s:readable:%d\n", target, len(data))
+	case "hostproc-pid":
+
+		data, err := os.ReadFile(fmt.Sprintf("/proc/%s/status", os.Args[3]))
+		if err != nil {
+			fmt.Printf("hostproc=%s:err:%v\n", os.Args[3], err)
+			return 0
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			if strings.HasPrefix(line, "Name:") || strings.HasPrefix(line, "Uid:") {
+				fmt.Printf("hostproc=%s:%s\n", os.Args[3], strings.Join(strings.Fields(line), " "))
+			}
+		}
+	case "ns":
+
+		for _, kind := range os.Args[3:] {
+			link, err := os.Readlink("/proc/self/ns/" + kind)
+			if err != nil {
+				fmt.Printf("ns_%s=err:%v\n", kind, err)
+				continue
+			}
+			fmt.Printf("ns_%s=%s\n", kind, nsInode(link))
+		}
+	case "writecount":
+
+		target := os.Args[3]
+		limit, err := strconv.Atoi(os.Args[4])
+		if err != nil {
+			fmt.Printf("writecount=err:%v\n", err)
+			return 0
+		}
+		f, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+		if err != nil {
+			fmt.Printf("writecount=%s:err:%v\n", target, err)
+			return 0
+		}
+		chunk := make([]byte, 4096)
+		for i := 0; i < limit; i++ {
+			if _, err := f.Write(chunk); err != nil {
+				fmt.Printf("writecount=%s:err:%v\n", target, err)
+				f.Close()
+				return 0
+			}
+		}
+		f.Close()
+		fmt.Printf("writecount=%s:ok\n", target)
+	case "burncpu":
+
+		deadline := time.Now().Add(time.Duration(500) * time.Millisecond)
+		for time.Now().Before(deadline) {
+			syscall.Getpid()
+		}
+		fmt.Printf("burncpu=ok\n")
+	case "forks":
+
+		limit, err := strconv.Atoi(os.Args[3])
+		if err != nil {
+			fmt.Printf("forks=err:%v\n", err)
+			return 0
+		}
+		created := 0
+		for i := 0; i < limit; i++ {
+			attr := &syscall.ProcAttr{
+				Dir:   "/",
+				Env:   []string{"PATH=/usr/bin:/bin"},
+				Files: []uintptr{0, 1, 2},
+			}
+			pid, err := syscall.ForkExec("/bin/true", []string{"/bin/true"}, attr)
+			if err != nil {
+				fmt.Printf("forks=created:%d:err:%v\n", created, err)
+				return 0
+			}
+			if _, err := syscall.Wait4(pid, nil, 0, nil); err != nil {
+				fmt.Printf("forks=created:%d:wait-err:%v\n", created, err)
+				return 0
+			}
+			created++
+		}
+		fmt.Printf("forks=created:%d:ok\n", created)
+	case "sleepms":
+
+		ms, err := strconv.Atoi(os.Args[3])
+		if err != nil {
+			fmt.Printf("sleep=err:%v\n", err)
+			return 0
+		}
+		time.Sleep(time.Duration(ms) * time.Millisecond)
+		fmt.Printf("sleep=ok\n")
+	case "chroot-try":
+
+		if err := syscall.Chroot("/"); err != nil {
+			fmt.Printf("chroot=err:%v\n", err)
+			return 0
+		}
+		fmt.Printf("chroot=ok\n")
+	case "sleep-orphan":
+
+		parent := exec.Command(testExe, "__probe", "sleep-orphan-kid")
+		parent.Stdout = os.Stdout
+		parent.Stderr = os.Stderr
+		if err := parent.Start(); err != nil {
+			fmt.Printf("sleep_orphan=err:%v\n", err)
+			return 0
+		}
+		fmt.Printf("sleep_orphan=kid:%d\n", parent.Process.Pid)
+		_ = parent.Wait()
+	case "sleep-orphan-kid":
+
+		time.Sleep(30 * time.Second)
+		os.Exit(0)
 	default:
 		fmt.Printf("unknown-probe=%s\n", kind)
 	}
 	return 0
 }
 
-func canUseNamespaces() bool {
-	if os.Geteuid() == 0 {
-		return true
+func nsInode(link string) string {
+	if i := strings.Index(link, "["); i >= 0 {
+		link = link[i+1:]
+		if j := strings.Index(link, "]"); j >= 0 {
+			return link[:j]
+		}
 	}
+	return link
+}
 
-	cmd := exec.Command(testExe, "__probe", "selfns")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Cloneflags: syscall.CLONE_NEWUSER}
-	if err := cmd.Run(); err != nil {
+var namespaceSupport struct {
+	once sync.Once
+	ok   bool
+}
+
+func canUseNamespaces() bool {
+	namespaceSupport.once.Do(func() {
+		if os.Geteuid() == 0 {
+			namespaceSupport.ok = true
+			return
+		}
+		namespaceSupport.ok = probeUserNamespace()
+	})
+	return namespaceSupport.ok
+}
+
+//go:noinline
+func probeUserNamespace() bool {
+	const sysClone = 56
+	r, _, errno := syscall.RawSyscall(sysClone, uintptr(syscall.CLONE_NEWUSER)|uintptr(syscall.SIGCHLD), 0, 0)
+	if errno != 0 {
 		return false
 	}
-	return true
+	if r == 0 {
+		syscall.RawSyscall(syscall.SYS_EXIT_GROUP, 0, 0, 0)
+		for {
+		}
+	}
+	var ws syscall.WaitStatus
+	for {
+		pid, err := syscall.Wait4(int(r), &ws, 0, nil)
+		if err == syscall.EINTR {
+			continue
+		}
+		if err != nil {
+			return false
+		}
+		if pid == int(r) {
+			return ws.Exited() && ws.ExitStatus() == 0
+		}
+	}
 }
 
 func runJail(t *testing.T, kinds []bars.Kind, userns bool, probeKind string, hostname string) (string, int) {
@@ -248,7 +575,7 @@ func runJail(t *testing.T, kinds []bars.Kind, userns bool, probeKind string, hos
 		t.Skip("environment cannot create namespaces")
 	}
 
-	var out bytes.Buffer
+	out := &syncBuf{}
 
 	cfg := &InitConfig{
 		Args:      []string{testExe, "__probe", probeKind},
@@ -261,8 +588,8 @@ func runJail(t *testing.T, kinds []bars.Kind, userns bool, probeKind string, hos
 		Init:       *cfg,
 		Namespaces: kinds,
 		Userns:     userns,
-		Stdout:     &out,
-		Stderr:     &out,
+		Stdout:     out,
+		Stderr:     out,
 	}
 	if userns {
 		opts.UidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Geteuid(), Size: 1}}
@@ -328,7 +655,7 @@ func runCell(t *testing.T, userns bool, probeKind string, hostname string) (stri
 		t.Skip("environment cannot create namespaces")
 	}
 
-	var out bytes.Buffer
+	out := &syncBuf{}
 
 	cfg := &InitConfig{
 		Args:      []string{testExe, "__probe", probeKind},
@@ -341,8 +668,8 @@ func runCell(t *testing.T, userns bool, probeKind string, hostname string) (stri
 		Init:       *cfg,
 		Namespaces: []bars.Kind{bars.PID, bars.UTS, bars.Mount},
 		Userns:     userns,
-		Stdout:     &out,
-		Stderr:     &out,
+		Stdout:     out,
+		Stderr:     out,
 	}
 	if userns {
 		opts.UidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Geteuid(), Size: 1}}
@@ -488,7 +815,7 @@ func TestPrisonerIsChildOfInit(t *testing.T) {
 	if !canUseNamespaces() {
 		t.Skip("environment cannot create namespaces")
 	}
-	var out bytes.Buffer
+	out := &syncBuf{}
 	cfg := &InitConfig{
 		Args:      []string{testExe, "__probe", "sleep"},
 		MountProc: false,
@@ -499,8 +826,8 @@ func TestPrisonerIsChildOfInit(t *testing.T) {
 		Init:        *cfg,
 		Namespaces:  []bars.Kind{bars.PID, bars.UTS, bars.Mount},
 		Userns:      true,
-		Stdout:      &out,
-		Stderr:      &out,
+		Stdout:      out,
+		Stderr:      out,
 		UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Geteuid(), Size: 1}},
 		GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getegid(), Size: 1}},
 	}
@@ -548,7 +875,7 @@ func TestTerminateEscalatesToKill(t *testing.T) {
 	if !canUseNamespaces() {
 		t.Skip("environment cannot create namespaces")
 	}
-	var out syncBuf
+	out := &syncBuf{}
 	cfg := &InitConfig{
 		Args:      []string{testExe, "__probe", "sigignore"},
 		MountProc: false,
@@ -560,8 +887,8 @@ func TestTerminateEscalatesToKill(t *testing.T) {
 		Init:        *cfg,
 		Namespaces:  []bars.Kind{bars.PID, bars.UTS, bars.Mount},
 		Userns:      true,
-		Stdout:      &out,
-		Stderr:      &out,
+		Stdout:      out,
+		Stderr:      out,
 		Env:         []string{"JAILOR_ESCALATE_AFTER=500ms", "PATH=/usr/bin:/bin"},
 		UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Geteuid(), Size: 1}},
 		GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getegid(), Size: 1}},
@@ -580,7 +907,7 @@ func TestTerminateEscalatesToKill(t *testing.T) {
 	if err := child.ReadReady(); err != nil {
 		t.Fatalf("read ready: %v", err)
 	}
-	if err := waitOutput(t, &out, "sigignore=ready"); err != nil {
+	if err := waitOutput(t, out, "sigignore=ready"); err != nil {
 		t.Fatal(err)
 	}
 	if err := child.Signal(syscall.SIGTERM); err != nil {
@@ -589,7 +916,7 @@ func TestTerminateEscalatesToKill(t *testing.T) {
 	start := time.Now()
 	code := child.Wait()
 	if want := 128 + int(syscall.SIGKILL); code != want {
-		t.Errorf("exit code = %d, want %d (escalated SIGKILL)", code, want)
+		t.Errorf("exit code = %d, want %d (escalated SIGKILL); output: %s", code, want, out.String())
 	}
 	if got := time.Since(start); got > 8*time.Second {
 		t.Errorf("escalation took too long: %v", got)
@@ -654,13 +981,13 @@ func runConfigured(t *testing.T, cfg *InitConfig, userns bool) (string, int) {
 	if !canUseNamespaces() {
 		t.Skip("environment cannot create namespaces")
 	}
-	var out bytes.Buffer
+	out := &syncBuf{}
 	opts := SpawnOpts{
 		Init:       *cfg,
 		Namespaces: []bars.Kind{bars.PID, bars.UTS, bars.Mount},
 		Userns:     userns,
-		Stdout:     &out,
-		Stderr:     &out,
+		Stdout:     out,
+		Stderr:     out,
 	}
 	if userns {
 		opts.UidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Geteuid(), Size: 1}}
@@ -730,7 +1057,7 @@ func TestUnknownSeccompProfileFailsClosed(t *testing.T) {
 	if !canUseNamespaces() {
 		t.Skip("environment cannot create namespaces")
 	}
-	var out bytes.Buffer
+	out := &syncBuf{}
 	cfg := &InitConfig{
 		Args:           []string{testExe, "__probe", "seccomp-try"},
 		MountProc:      false,
@@ -742,8 +1069,8 @@ func TestUnknownSeccompProfileFailsClosed(t *testing.T) {
 		Init:        *cfg,
 		Namespaces:  []bars.Kind{bars.PID, bars.UTS, bars.Mount},
 		Userns:      true,
-		Stdout:      &out,
-		Stderr:      &out,
+		Stdout:      out,
+		Stderr:      out,
 		UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Geteuid(), Size: 1}},
 		GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getegid(), Size: 1}},
 	}
@@ -771,7 +1098,7 @@ func TestUnknownLSMFailsClosed(t *testing.T) {
 	if !canUseNamespaces() {
 		t.Skip("environment cannot create namespaces")
 	}
-	var out bytes.Buffer
+	out := &syncBuf{}
 	cfg := &InitConfig{
 		Args:      []string{testExe, "__probe", "lsm-try"},
 		MountProc: false,
@@ -784,8 +1111,8 @@ func TestUnknownLSMFailsClosed(t *testing.T) {
 		Init:        *cfg,
 		Namespaces:  []bars.Kind{bars.PID, bars.UTS, bars.Mount},
 		Userns:      true,
-		Stdout:      &out,
-		Stderr:      &out,
+		Stdout:      out,
+		Stderr:      out,
 		UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Geteuid(), Size: 1}},
 		GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getegid(), Size: 1}},
 	}
@@ -809,13 +1136,140 @@ func TestUnknownLSMFailsClosed(t *testing.T) {
 	}
 }
 
+func TestReadOnlyCellUserNamespace(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("a read-only Cell needs host root: remounting a superblock owned by the initial user namespace requires CAP_SYS_ADMIN there")
+	}
+	cell := scratchCell(t)
+	out := &syncBuf{}
+	cfg := &InitConfig{
+		Args:      []string{testExe, "__probe", "write-root"},
+		Rootfs:    cell,
+		MountProc: true,
+		MountDev:  true,
+		ReadOnly:  true,
+	}
+	opts := SpawnOpts{
+		Init:       *cfg,
+		Namespaces: []bars.Kind{bars.PID, bars.UTS, bars.Mount},
+		Stdout:     out,
+		Stderr:     out,
+	}
+	child, err := Spawn(opts, cfg)
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	defer child.Close()
+	if err := child.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if err := child.Release(); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if err := child.ReadReady(); err != nil {
+		t.Fatalf("read ready: %v (output: %s)", err, out.String())
+	}
+	if code := child.Wait(); code != 0 {
+		t.Fatalf("exit code = %d, output: %s", code, out.String())
+	}
+	if !strings.Contains(out.String(), "write_root=err") {
+		t.Errorf("write to a read-only Cell root must fail, got %s", out.String())
+	}
+	if _, err := os.Stat(filepath.Join(cell, "jailor-readonly-test")); err == nil {
+		t.Error("read-only Cell accepted a write at the Cell root")
+	}
+}
+
+func TestReadOnlyCellKeepsCellReadable(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("a read-only Cell needs host root: remounting a superblock owned by the initial user namespace requires CAP_SYS_ADMIN there")
+	}
+	cell := scratchCell(t)
+	if err := os.WriteFile(filepath.Join(cell, "readable-marker"), []byte("visible"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := &syncBuf{}
+	cfg := &InitConfig{
+		Args:      []string{testExe, "__probe", "read", "/readable-marker"},
+		Rootfs:    cell,
+		MountProc: true,
+		MountDev:  true,
+		ReadOnly:  true,
+	}
+	opts := SpawnOpts{
+		Init:       *cfg,
+		Namespaces: []bars.Kind{bars.PID, bars.UTS, bars.Mount},
+		Stdout:     out,
+		Stderr:     out,
+	}
+	child, err := Spawn(opts, cfg)
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	defer child.Close()
+	if err := child.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if err := child.Release(); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if err := child.ReadReady(); err != nil {
+		t.Fatalf("read ready: %v (output: %s)", err, out.String())
+	}
+	if code := child.Wait(); code != 0 {
+		t.Fatalf("exit code = %d, output: %s", code, out.String())
+	}
+	if !strings.Contains(out.String(), "readable:visible") {
+		t.Errorf("a read-only Cell must stay readable, got %s", out.String())
+	}
+}
+
+func TestReadOnlyCellRejectsHostRoot(t *testing.T) {
+	if !canUseNamespaces() {
+		t.Skip("environment cannot create namespaces")
+	}
+	out := &syncBuf{}
+	cfg := &InitConfig{
+		Args:      []string{testExe, "__probe", "write-root"},
+		MountProc: true,
+		MountDev:  true,
+		ReadOnly:  true,
+	}
+	opts := SpawnOpts{
+		Init:        *cfg,
+		Namespaces:  []bars.Kind{bars.PID, bars.UTS, bars.Mount},
+		Userns:      true,
+		Stdout:      out,
+		Stderr:      out,
+		UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Geteuid(), Size: 1}},
+		GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getegid(), Size: 1}},
+	}
+	child, err := Spawn(opts, cfg)
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	defer child.Close()
+	if err := child.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if err := child.Release(); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if err := child.ReadReady(); err == nil {
+		t.Fatal("read-only mode without a Cell must fail instead of remounting the host root")
+	}
+	if code := child.Wait(); code == 0 {
+		t.Fatal("the jail must report failure for read-only mode without a Cell")
+	}
+}
+
 func TestReadOnlyCell(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("requires root for pivot_root into the Cell")
 	}
 
 	cell := scratchCell(t)
-	var out bytes.Buffer
+	out := &syncBuf{}
 	cfg := &InitConfig{
 		Args:      []string{"/bin/sh", "-c", "if touch /ro-marker 2>/dev/null; then echo writable; else echo readonly; fi"},
 		Rootfs:    cell,
@@ -831,8 +1285,8 @@ func TestReadOnlyCell(t *testing.T) {
 		Init:        *cfg,
 		Namespaces:  []bars.Kind{bars.PID, bars.UTS, bars.Mount},
 		Userns:      true,
-		Stdout:      &out,
-		Stderr:      &out,
+		Stdout:      out,
+		Stderr:      out,
 		UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Geteuid(), Size: 1}},
 		GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getegid(), Size: 1}},
 	}

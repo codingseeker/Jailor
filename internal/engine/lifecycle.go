@@ -58,7 +58,8 @@ func (e *Engine) Start(ctx context.Context, id string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if err := e.startLocked(ctx, rec); err != nil {
+	run, err := e.startLocked(ctx, rec)
+	if err != nil {
 		return 0, err
 	}
 
@@ -69,7 +70,7 @@ func (e *Engine) Start(ctx context.Context, id string) (int, error) {
 		Fields:  map[string]any{"pid": rec.Pid},
 	})
 
-	code, err := e.wait(ctx, rec.ID)
+	code, err := waitForRun(ctx, run)
 	if err != nil {
 		return code, err
 	}
@@ -98,14 +99,14 @@ func (e *Engine) Run(ctx context.Context, spec api.Jail) (api.RunResult, error) 
 	return api.RunResult{ID: rec.ID, ExitCode: code}, nil
 }
 
-func (e *Engine) startLocked(ctx context.Context, rec *ledger.Record) error {
+func (e *Engine) startLocked(ctx context.Context, rec *ledger.Record) (*run, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if _, ok := e.active[rec.ID]; ok {
-		return fmt.Errorf("jail %s is already supervised by this engine", rec.ID)
+		return nil, fmt.Errorf("jail %s is already supervised by this engine", rec.ID)
 	}
 	if !e.canStart(rec.State) {
-		return fmt.Errorf("jail %s cannot be started from state %s", rec.ID, rec.State)
+		return nil, fmt.Errorf("jail %s cannot be started from state %s", rec.ID, rec.State)
 	}
 
 	stdin := openNull()
@@ -125,10 +126,10 @@ func (e *Engine) startLocked(ctx context.Context, rec *ledger.Record) error {
 	go func() {
 		defer close(r.done)
 
-		r.code = wardenStart(runCtx, opts, rec.ID)
+		r.setCode(wardenStart(runCtx, opts, rec.ID))
 
 		closeQuietly(stdin, stdout, stderr)
-		if r.code != 0 && r.code != 137 && r.code != 143 {
+		if code := r.exitCode(); code != 0 && code != 137 && code != 143 {
 
 			e.bump(rec.ID, "failures")
 		}
@@ -138,7 +139,7 @@ func (e *Engine) startLocked(ctx context.Context, rec *ledger.Record) error {
 		}
 		e.mu.Unlock()
 	}()
-	return nil
+	return r, nil
 }
 
 func (e *Engine) canStart(state string) bool {
@@ -149,27 +150,10 @@ var wardenStart = func(ctx context.Context, opts warden.Options, id string) int 
 	return warden.New(opts).Start(ctx, id)
 }
 
-func (e *Engine) wait(ctx context.Context, id string) (int, error) {
-	e.mu.Lock()
-	r, ok := e.active[id]
-	if !ok {
-
-		e.mu.Unlock()
-		rec, err := e.led.Find(id)
-		if err != nil {
-			return 0, err
-		}
-		return rec.ExitCode, nil
-	}
-	done := r.done
-	e.mu.Unlock()
-
+func waitForRun(ctx context.Context, r *run) (int, error) {
 	select {
-	case <-done:
-		e.mu.Lock()
-		code := r.code
-		e.mu.Unlock()
-		return code, nil
+	case <-r.done:
+		return r.exitCode(), nil
 	case <-ctx.Done():
 		return 0, ctx.Err()
 	}

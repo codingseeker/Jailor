@@ -5,6 +5,7 @@ package jail
 import (
 	"fmt"
 	"os"
+	"sort"
 	"syscall"
 	"unsafe"
 )
@@ -13,7 +14,21 @@ const (
 	prCapBSetDrop = 24
 )
 
-const linuxCapabilityVersion3 = 0x20080522
+const (
+	capVersion3 = 0x20080522
+	capCount    = 41
+)
+
+type rawCapHeader struct {
+	version uint32
+	pid     int32
+}
+
+type rawCapData struct {
+	effective   uint32
+	permitted   uint32
+	inheritable uint32
+}
 
 type capHeader struct {
 	version uint32
@@ -49,7 +64,7 @@ var capNames = map[string]int{
 	"CAP_SYS_PTRACE":         19,
 	"CAP_SYS_PACCT":          20,
 	"CAP_SYS_ADMIN":          21,
-	"CAP_SYS_BOOT":           22,
+	"CAP_BOOT":               22,
 	"CAP_SYS_NICE":           23,
 	"CAP_SYS_RESOURCE":       24,
 	"CAP_SYS_TIME":           25,
@@ -75,78 +90,103 @@ func capNumber(name string) (int, bool) {
 	return n, ok
 }
 
-func dropBoundingCaps(keep []string) error {
-	keepSet := make(map[string]bool, len(keep))
-	for _, c := range keep {
-		keepSet[c] = true
+func knownCapabilityNames() []string {
+	names := make([]string, 0, len(capNames))
+	for name := range capNames {
+		names = append(names, name)
 	}
-	for name, num := range capNames {
-		if keepSet[name] {
+	sort.Strings(names)
+	return names
+}
+
+func capMaskFor(keep []string) (uint64, error) {
+	if len(keep) == 0 {
+		return 0, nil
+	}
+	var mask uint64
+	for _, name := range keep {
+		num, ok := capNames[name]
+		if !ok {
+			return 0, fmt.Errorf("jail: unknown capability %q", name)
+		}
+		if num >= 64 {
+			return 0, fmt.Errorf("jail: capability %q is out of range", name)
+		}
+		mask |= 1 << uint(num)
+	}
+	return mask, nil
+}
+
+func applyCapabilityPolicy(keep []string) error {
+	mask, err := capMaskFor(keep)
+	if err != nil {
+		return err
+	}
+	if err := dropBoundingCaps(mask); err != nil {
+		return err
+	}
+	return dropEffectiveCaps(mask)
+}
+
+func dropBoundingCaps(mask uint64) error {
+	names := make([]int, 0, len(capNames))
+	for _, num := range capNames {
+		if mask&(1<<uint(num)) != 0 {
 			continue
 		}
+		names = append(names, num)
+	}
+	sort.Ints(names)
+	for _, num := range names {
 		if _, _, errno := syscall.Syscall6(
 			syscall.SYS_PRCTL, prCapBSetDrop, uintptr(num), 0, 0, 0, 0,
 		); errno != 0 {
-
 			if os.Geteuid() == 0 {
-				return fmt.Errorf("drop cap %s: %w", name, errno)
+				return fmt.Errorf("jail: drop capability %s from bounding set: %w", capNameOf(num), errno)
 			}
 		}
 	}
 	return nil
 }
 
-func dropEffectiveCaps(keep []string) error {
-	keepSet := make(map[string]bool, len(keep))
-	for _, c := range keep {
-		keepSet[c] = true
-	}
-	if keepSet["all"] {
-		return nil
-	}
-
-	if len(capNames) == 0 {
-		return nil
-	}
-
+func dropEffectiveCaps(mask uint64) error {
 	var data [2]capData
-	_, _, errno := syscall.Syscall6(syscall.SYS_CAPGET,
-		uintptr(unsafe.Pointer(&capHeader{version: linuxCapabilityVersion3})),
-		uintptr(unsafe.Pointer(&data[0])),
-		0, 0, 0, 0)
+	hdr := capHeader{version: capVersion3}
+	_, _, errno := syscall.Syscall(syscall.SYS_CAPGET,
+		uintptr(unsafe.Pointer(&hdr)), uintptr(unsafe.Pointer(&data[0])), 0)
 	if errno != 0 {
-		return fmt.Errorf("jail: capget: %v", errno)
+		return fmt.Errorf("jail: capget: %w", errno)
 	}
 	lo := data[0]
 	hi := data[1]
 
-	var keepMask uint64
-	for _, c := range keep {
-		if n, ok := capNames[c]; ok {
-			keepMask |= 1 << uint(n)
-		}
-	}
-	keptLo := uint32(keepMask & 0xffffffff)
-	keptHi := uint32(keepMask >> 32)
-
-	newLo := capData{
-		effective:   lo.effective & keptLo,
-		permitted:   lo.permitted & keptLo,
-		inheritable: lo.inheritable & keptLo,
-	}
-	newHi := capData{
-		effective:   hi.effective & keptHi,
-		permitted:   hi.permitted & keptHi,
-		inheritable: hi.inheritable & keptHi,
+	words := [2]capData{
+		{
+			effective:   lo.effective & uint32(mask),
+			permitted:   lo.permitted & uint32(mask),
+			inheritable: lo.inheritable & uint32(mask),
+		},
+		{
+			effective:   hi.effective & uint32(mask>>32),
+			permitted:   hi.permitted & uint32(mask>>32),
+			inheritable: hi.inheritable & uint32(mask>>32),
+		},
 	}
 
-	hdr := capHeader{version: linuxCapabilityVersion3}
-
-	words := [2]capData{newLo, newHi}
+	set := capHeader{version: capVersion3}
 	_, _, errno = syscall.Syscall(syscall.SYS_CAPSET,
-		uintptr(unsafe.Pointer(&hdr)), uintptr(unsafe.Pointer(&words[0])), 0)
+		uintptr(unsafe.Pointer(&set)), uintptr(unsafe.Pointer(&words[0])), 0)
 	if errno != 0 {
-		return fmt.Errorf("jail: capset: %v", errno)
+		return fmt.Errorf("jail: capset: %w", errno)
 	}
 	return nil
+}
+
+func capNameOf(num int) string {
+	for name, n := range capNames {
+		if n == num {
+			return name
+		}
+	}
+	return fmt.Sprintf("#%d", num)
 }
