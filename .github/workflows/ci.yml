@@ -330,8 +330,8 @@ jobs:
         run: |
           set -euo pipefail
           sudo -E --preserve-env=PATH,HOME,GOCACHE,GOMODCACHE,GOPATH,GOTOOLCHAIN,GOFLAGS \
-            env "PATH=$PATH" "HOME=$HOME" "GOCACHE=$GOCACHE" "GOMODCACHE=$GOMODCACHE" \
-                "GOPATH=$GOPATH" "GOFLAGS=$GOFLAGS" "GOTOOLCHAIN=${GOTOOLCHAIN:-}" \
+            env "PATH=$PATH" "HOME=$HOME" "GOCACHE=${GOCACHE:-}" "GOMODCACHE=${GOMODCACHE:-}" \
+                "GOPATH=${GOPATH:-}" "GOFLAGS=${GOFLAGS:-}" "GOTOOLCHAIN=${GOTOOLCHAIN:-}" \
             bash -c '
               set -euo pipefail
               test "$(id -u)" -eq 0
@@ -344,8 +344,8 @@ jobs:
         run: |
           set -euo pipefail
           sudo -E --preserve-env=PATH,HOME,GOCACHE,GOMODCACHE,GOPATH,GOTOOLCHAIN,GOFLAGS \
-            env "PATH=$PATH" "HOME=$HOME" "GOCACHE=$GOCACHE" "GOMODCACHE=$GOMODCACHE" \
-                "GOPATH=$GOPATH" "GOFLAGS=$GOFLAGS" "GOTOOLCHAIN=${GOTOOLCHAIN:-}" \
+            env "PATH=$PATH" "HOME=$HOME" "GOCACHE=${GOCACHE:-}" "GOMODCACHE=${GOMODCACHE:-}" \
+                "GOPATH=${GOPATH:-}" "GOFLAGS=${GOFLAGS:-}" "GOTOOLCHAIN=${GOTOOLCHAIN:-}" \
             bash -c '
               set -euo pipefail
               test "$(id -u)" -eq 0
@@ -358,8 +358,8 @@ jobs:
         run: |
           set -euo pipefail
           sudo -E --preserve-env=PATH,HOME,GOCACHE,GOMODCACHE,GOPATH,GOTOOLCHAIN,GOFLAGS \
-            env "PATH=$PATH" "HOME=$HOME" "GOCACHE=$GOCACHE" "GOMODCACHE=$GOMODCACHE" \
-                "GOPATH=$GOPATH" "GOFLAGS=$GOFLAGS" "GOTOOLCHAIN=${GOTOOLCHAIN:-}" \
+            env "PATH=$PATH" "HOME=$HOME" "GOCACHE=${GOCACHE:-}" "GOMODCACHE=${GOMODCACHE:-}" \
+                "GOPATH=${GOPATH:-}" "GOFLAGS=${GOFLAGS:-}" "GOTOOLCHAIN=${GOTOOLCHAIN:-}" \
             bash -c '
               set -euo pipefail
               test "$(id -u)" -eq 0
@@ -371,8 +371,8 @@ jobs:
         run: |
           set -euo pipefail
           sudo -E --preserve-env=PATH,HOME,GOCACHE,GOMODCACHE,GOPATH,GOTOOLCHAIN,GOFLAGS \
-            env "PATH=$PATH" "HOME=$HOME" "GOCACHE=$GOCACHE" "GOMODCACHE=$GOMODCACHE" \
-                "GOPATH=$GOPATH" "GOFLAGS=$GOFLAGS" "GOTOOLCHAIN=${GOTOOLCHAIN:-}" \
+            env "PATH=$PATH" "HOME=$HOME" "GOCACHE=${GOCACHE:-}" "GOMODCACHE=${GOMODCACHE:-}" \
+                "GOPATH=${GOPATH:-}" "GOFLAGS=${GOFLAGS:-}" "GOTOOLCHAIN=${GOTOOLCHAIN:-}" \
             bash -c '
               set -euo pipefail
               test "$(id -u)" -eq 0
